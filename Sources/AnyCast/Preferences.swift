@@ -1,0 +1,15 @@
+enum Pref {
+    static let maxHeight = "maxHeight"
+    static let playsHEVC = "playsHEVC"
+    static let mirrorFPS = "mirrorFPS"
+    static let mirrorBitrate = "mirrorBitrate"
+    static let mirrorCursor = "mirrorCursor"
+    static let mirrorAudio = "mirrorAudio"
+    static let lidClosed = "lidClosed"
+    static let pauseBrowser = "pauseBrowser"
+    static let resumePosition = "resumePosition"
+    static let showMenuBar = "showMenuBar"
+    static let lowLatency = "lowLatency"
+    static let muteMac = "muteMac"
+    static let autoUpdate = "autoUpdate"
+}
