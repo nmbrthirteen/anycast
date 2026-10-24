@@ -2,6 +2,27 @@ import AppKit
 import ScreenCaptureKit
 
 enum Snapshot {
+    static func probeWindows(of appName: String, to directory: String) async {
+        do {
+            let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
+            let windows = content.windows.filter { $0.owningApplication?.applicationName == appName && $0.windowLayer == 0 && $0.frame.height > 200 }
+            for (index, window) in windows.enumerated() {
+                for shot in 0..<2 {
+                    let config = SCStreamConfiguration()
+                    config.width = Int(window.frame.width)
+                    config.height = Int(window.frame.height)
+                    let image = try await SCScreenshotManager.captureImage(contentFilter: SCContentFilter(desktopIndependentWindow: window), configuration: config)
+                    try NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+                        .write(to: URL(fileURLWithPath: "\(directory)/w\(index)-\(shot).png"))
+                    if shot == 0 { try await Task.sleep(for: .seconds(3)) }
+                }
+                Log.write("probe \(index) \(window.title ?? "") onscreen=\(window.isOnScreen) active=\(window.isActive)")
+            }
+        } catch {
+            Log.write("probe failed: \(error.localizedDescription)")
+        }
+    }
+
     static func captureOwnWindows(to directory: String) async {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)

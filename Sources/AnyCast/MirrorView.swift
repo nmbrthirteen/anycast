@@ -9,6 +9,7 @@ struct MirrorView: View {
             if ScreenMirror.hasPermission {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 18) {
+                        TVScreenCard()
                         NowPlayingCard()
                         LazyVGrid(columns: columns, spacing: 18) {
                             ForEach(sortedTargets) { target in
@@ -57,6 +58,36 @@ extension MirrorView {
     }
 }
 
+struct TVScreenCard: View {
+    @EnvironmentObject private var controller: CastController
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Image(systemName: controller.tvScreenOn ? "tv.inset.filled" : "tv")
+                .font(.title2)
+                .foregroundStyle(.tint)
+                .frame(width: 44, height: 44)
+                .glassEffect(.regular, in: .rect(cornerRadius: 12))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("TV screen").font(.headline)
+                Text(controller.tvScreenOn
+                     ? "On, to the right of your display. Anything you move there shows on the TV, on any desktop."
+                     : "A second screen that shows on your TV. Windows on it keep playing when you switch desktops.")
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if controller.tvScreenOn {
+                Button("Turn off", action: controller.stopTVScreen).buttonStyle(.glass).controlSize(.large)
+            } else {
+                Button("Turn on", systemImage: "rectangle.portrait.and.arrow.right", action: controller.startTVScreen)
+                    .buttonStyle(.glassProminent).controlSize(.large)
+            }
+        }
+        .padding(16)
+        .glassEffect(.regular, in: .rect(cornerRadius: 20))
+    }
+}
+
 struct NowPlayingCard: View {
     @EnvironmentObject private var controller: CastController
 
@@ -67,7 +98,7 @@ struct NowPlayingCard: View {
                 Image(nsImage: icon).resizable().frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("\(app.name) is playing").font(.headline)
-                    Text("Mirror only its window, cropped to the video when possible.")
+                    Text("Moves its window onto the TV screen so it keeps playing on any desktop.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             } else {
@@ -78,7 +109,7 @@ struct NowPlayingCard: View {
                 }
             }
             Spacer()
-            Button("Mirror playing media", systemImage: "play.rectangle.on.rectangle.fill", action: controller.mirrorPlayingMedia)
+            Button("Send to TV", systemImage: "play.rectangle.on.rectangle.fill", action: controller.mirrorPlayingMedia)
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
                 .disabled(controller.playingApps.isEmpty)

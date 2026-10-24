@@ -71,6 +71,26 @@ private struct GeneralSettings: View {
                 Text("Reading the play position needs \"Allow JavaScript from Apple Events\" in your browser's developer menu. Casting works without it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section {
+                LabeledContent("1. Open", value: "chrome://extensions")
+                LabeledContent("2. Turn on", value: "Developer mode")
+                LabeledContent("3. Click", value: "Load unpacked, then pick the folder")
+                Button("Show extension folder", action: Extension.revealFolder)
+            } header: {
+                Text("Browser extension")
+            } footer: {
+                Text("Works in Chrome and Helium. Click its icon on any tab to send that tab's video and sound to the TV. It keeps playing when you switch desktops.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section {
+                Button("Allow moving windows to the TV screen", action: WindowMover.requestPermission)
+                    .disabled(WindowMover.isAllowed)
+            } header: {
+                Text("TV screen")
+            } footer: {
+                Text("Lets Send to TV move the playing window onto the TV screen for you. Uses Accessibility permission.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Keyboard") {
                 LabeledContent("Play or pause", value: "Space")
                 LabeledContent("Cast front browser tab", value: "Menu bar icon")
@@ -179,6 +199,7 @@ private struct PowerSettings: View {
 private struct PermissionSettings: View {
     @EnvironmentObject private var controller: CastController
     @State private var refresh = 0
+    @State private var automation: [String: Permissions.State] = [:]
 
     var body: some View {
         Form {
@@ -191,7 +212,7 @@ private struct PermissionSettings: View {
                               action: Permissions.requestScreenRecording)
                 ForEach(controller.browsers) { browser in
                     PermissionRow(title: browser.name, detail: "Reads tabs and pauses the video",
-                                  state: Permissions.automation(bundleID: bundleID(browser.name)),
+                                  state: automation[browser.name] ?? .checking,
                                   action: Permissions.openAutomationSettings)
                 }
             } footer: {
@@ -201,10 +222,13 @@ private struct PermissionSettings: View {
         }
         .formStyle(.grouped)
         .id(refresh)
+        .task(id: refresh) {
+            for browser in controller.browsers {
+                automation[browser.name] = await Permissions.automationAsync(bundleID: BrowserWatcher.bundleID(forName: browser.name) ?? "")
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in refresh += 1 }
     }
-
-    private func bundleID(_ name: String) -> String { BrowserWatcher.bundleID(forName: name) ?? "" }
 }
 
 private struct PermissionRow: View {

@@ -123,9 +123,13 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     }
 
     private(set) var windowID: CGWindowID?
+    private(set) var displayID: CGDirectDisplayID?
 
     func start(_ target: MirrorTarget, settings: MirrorSettings) async throws {
-        if case .window(let id) = target.kind { windowID = id } else { windowID = nil }
+        switch target.kind {
+        case .window(let id): (windowID, displayID) = (id, nil)
+        case .display(let id): (windowID, displayID) = (nil, id)
+        }
         try await start(filter: Self.filter(for: target), settings: settings, crop: target.crop)
     }
 

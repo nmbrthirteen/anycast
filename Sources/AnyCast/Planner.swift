@@ -33,6 +33,7 @@ struct CastPlan {
         case remux = "Original quality, repackaged for the TV by your Mac."
         case converted = "Converted for your TV at high bitrate."
         case mirror = "Mirroring with sound."
+        case tab = "Streaming this tab from the AnyCast extension. It keeps playing on any desktop."
 
         var label: String {
             switch self {
@@ -41,6 +42,7 @@ struct CastPlan {
             case .remux: "Original quality"
             case .converted: "Converted"
             case .mirror: "Mirroring"
+            case .tab: "Browser tab"
             }
         }
     }

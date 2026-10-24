@@ -18,6 +18,7 @@ final class CastController: ObservableObject {
     @Published var thumbnails: [MirrorTarget.ID: NSImage] = [:]
     @Published var browsers: [Browser] = []
     @Published var playingApps: [PlayingApp] = []
+    @Published var tvScreenOn = false
     @Published var loadingTabs = false
     @Published var recentFiles: [URL] = (UserDefaults.standard.stringArray(forKey: "recentFiles") ?? []).map { URL(fileURLWithPath: $0) }
 
@@ -37,6 +38,8 @@ final class CastController: ObservableObject {
     private let mirror = ScreenMirror()
     private let browser = BrowserWatcher()
     private let power = Power()
+    private let tabServer = TabCastServer()
+    private let tvScreen = TVScreen()
     private var offset = 0.0
     private var hasPlayed = false
     private var castStarted = Date()
@@ -54,6 +57,9 @@ final class CastController: ObservableObject {
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         try? server.start()
         mirror.onStopped = { [weak self] _ in Task { @MainActor in self?.stop() } }
+        tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
+        tabServer.start()
+        Extension.install()
         scan()
     }
 
@@ -102,6 +108,8 @@ final class CastController: ObservableObject {
         if let index = args.firstIndex(of: "--cast"), index + 1 < args.count {
             let target = args[index + 1]
             target.hasPrefix("http") ? castLink(target) : castFile(URL(fileURLWithPath: target))
+        } else if args.contains("--tv-screen") {
+            startTVScreen()
         } else if args.contains("--cast-tab") {
             castCurrentTab()
         } else if args.contains("--mirror") {
@@ -194,8 +202,36 @@ final class CastController: ObservableObject {
             guard let app = playingApps.first else {
                 throw Tools.Failure(message: "Nothing is playing sound right now. Start the video, then try again.")
             }
-            try await mirrorWindow(of: app)
+            if WindowMover.isAllowed {
+                try await sendToTVScreen(app)
+            } else {
+                WindowMover.requestPermission()
+                try await mirrorWindow(of: app)
+                message = "Allow AnyCast in Accessibility settings so it can move videos onto the TV screen. That keeps them playing on any desktop."
+            }
         }
+    }
+
+    func startTVScreen() {
+        run("Turning on the TV screen") { [self] in try await showTVScreen() }
+    }
+
+    func stopTVScreen() { stop() }
+
+    private func showTVScreen() async throws {
+        let id = try await tvScreen.turnOn()
+        tvScreenOn = true
+        if plan?.mode == .mirror, mirror.displayID == id { return }
+        try await mirror.start(MirrorTarget(kind: .display(id), title: "TV screen"), settings: mirrorSettings)
+        try await castMirror(title: "TV screen")
+    }
+
+    private func sendToTVScreen(_ app: PlayingApp) async throws {
+        try await showTVScreen()
+        guard let bounds = tvScreen.bounds, WindowMover.moveFrontWindow(of: app.pid, to: bounds) else {
+            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, to the right of your display.")
+        }
+        Log.write("moved \(app.name) onto the tv screen")
     }
 
     private func mirrorWindow(of app: PlayingApp) async throws {
@@ -241,6 +277,15 @@ final class CastController: ObservableObject {
         let filter = try await ScreenMirror.pickWithSystemPicker()
         try await mirror.start(filter: filter, settings: mirrorSettings)
         try await castMirror(title: "Screen mirroring")
+    }
+
+    private func castTabStream(_ session: TabSession) {
+        session.onEnded = { [weak self] in
+            Task { @MainActor in if self?.plan?.mode == .tab { self?.stop() } }
+        }
+        run("Sending \(session.title) to the TV") { [self] in
+            try await cast(CastPlan(title: session.title, kind: .video, duration: 0, mode: .tab, source: .mirror(make: { session.makeProducer() })))
+        }
     }
 
     private func castMirror(title: String) async throws {
@@ -299,6 +344,7 @@ final class CastController: ObservableObject {
     }
 
     func shutdown() {
+        tvScreen.turnOff()
         MacAudio.restore()
         server.clear()
         mirror.stop()
@@ -307,6 +353,8 @@ final class CastController: ObservableObject {
 
     private func endSession() {
         pollTask?.cancel()
+        tvScreen.turnOff()
+        tvScreenOn = false
         MacAudio.restore()
         mirror.speed = 1
         server.clear()
@@ -409,7 +457,7 @@ final class CastController: ObservableObject {
                 tvState = state
                 if let info = try? await client.position() {
                     position = info.position
-                    if case .mirror = plan?.source, info.position > 0 { tuneMirrorLatency(tvPosition: info.position) }
+                    if plan?.mode == .mirror, info.position > 0 { tuneMirrorLatency(tvPosition: info.position) }
                     if duration == 0, info.duration > 0 { duration = info.duration }
                     if state == "PLAYING" && info.position > 0 { hasPlayed = true }
                 }

@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "AnyCast",
+  "version": "1.0",
+  "description": "Send this tab's video and sound to your TV through the AnyCast app.",
+  "permissions": ["tabCapture", "offscreen"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Cast this tab to your TV" },
+  "icons": { "128": "icon128.png" }
+}

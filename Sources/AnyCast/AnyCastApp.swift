@@ -35,6 +35,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         signal(SIGPIPE, SIG_IGN)
         Log.rotate()
         let args = CommandLine.arguments
+        if let index = args.firstIndex(of: "--probe"), index + 2 < args.count {
+            let (app, directory) = (args[index + 1], args[index + 2])
+            Task { await Snapshot.probeWindows(of: app, to: directory) }
+        }
         if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
             let directory = args[index + 1]
             Task {
@@ -54,7 +58,10 @@ struct MenuBarContent: View {
 
     var body: some View {
         Button("Cast front browser tab", action: controller.castCurrentTab)
-        Button("Mirror playing media", action: controller.mirrorPlayingMedia)
+        Button("Send playing video to TV", action: controller.mirrorPlayingMedia)
+        Button(controller.tvScreenOn ? "Turn off TV screen" : "Turn on TV screen") {
+            controller.tvScreenOn ? controller.stopTVScreen() : controller.startTVScreen()
+        }
         Button("Mirror a window", action: controller.startMirrorWithPicker)
         if controller.plan != nil {
             Divider()

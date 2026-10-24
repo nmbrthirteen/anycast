@@ -9,6 +9,7 @@ xcrun actool "$PWD/Icon/AppIcon.icon" --compile "$PWD/$APP/Contents/Resources" -
     --app-icon AppIcon --output-partial-info-plist /tmp/anycast-icon.plist >/dev/null
 cp .build/release/AnyCast "$APP/Contents/MacOS/AnyCast"
 cp Info.plist "$APP/Contents/Info.plist"
+ditto Extension "$APP/Contents/Resources/Extension"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $(cat VERSION)" \
     -c "Set :CFBundleVersion $(git rev-list --count HEAD 2>/dev/null || echo 1)" "$APP/Contents/Info.plist"
 codesign --force --sign "AnyCast Local Signing" --identifier local.anycast.app "$APP"

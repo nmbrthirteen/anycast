@@ -85,6 +85,7 @@ struct NowPlayingBar: View {
     private func icon(for plan: CastPlan) -> String {
         switch (plan.mode, plan.kind) {
         case (.mirror, _): "rectangle.on.rectangle"
+        case (.tab, _): "safari"
         case (_, .audio): "music.note"
         case (_, .image): "photo"
         default: "play.tv.fill"
