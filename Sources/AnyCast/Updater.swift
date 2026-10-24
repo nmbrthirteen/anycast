@@ -4,8 +4,6 @@ import SwiftUI
 @MainActor
 final class Updater: ObservableObject {
     static let repo = "nmbrthirteen/anycast"
-    // Only builds signed by the same local certificate as this copy may replace it.
-    private static let requirement = "=identifier \"local.anycast.app\" and certificate leaf = H\"c70d195c4c3187d4a81b4a6b07f4e7205d65bf42\""
 
     enum State: Equatable {
         case idle, checking, upToDate, downloading(String), ready(String), failed(String)
@@ -15,7 +13,6 @@ final class Updater: ObservableObject {
     @AppStorage(Pref.autoUpdate) var autoUpdate = true
     var canInstallNow: () -> Bool = { true }
 
-    private let gh = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh"].first { FileManager.default.isExecutableFile(atPath: $0) }
     private var staged: URL?
     private var timer: Timer?
 
@@ -32,22 +29,26 @@ final class Updater: ObservableObject {
     }
 
     func check(installAutomatically: Bool) async {
-        guard let gh else { return state = .failed("Install the GitHub CLI to get updates: brew install gh") }
+        guard let requirement = CodeSignature.ownRequirement() else {
+            return state = .failed("This build isn't signed, so it can't verify updates. Build it with ./build.sh to update.")
+        }
         state = .checking
         do {
-            let data = try await Tools.run(gh, ["api", "repos/\(Self.repo)/releases/latest", "--jq", ".tag_name"])
-            let tag = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-            let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            let release = try await GitHubRelease.latest(repo: Self.repo)
+            let version = release.tag.hasPrefix("v") ? String(release.tag.dropFirst()) : release.tag
             guard Self.isNewer(version, than: Self.currentVersion) else { return state = .upToDate }
+            guard let asset = release.assets["AnyCast.zip"] else { throw Tools.Failure(message: "The latest release has no AnyCast.zip") }
 
             state = .downloading(version)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-update-\(version)")
             try? FileManager.default.removeItem(at: folder)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            _ = try await Tools.run(gh, ["release", "download", tag, "-R", Self.repo, "-p", "AnyCast.zip", "-D", folder.path])
-            _ = try await Tools.run("/usr/bin/ditto", ["-x", "-k", folder.appendingPathComponent("AnyCast.zip").path, folder.path])
+            let zip = try await GitHubRelease.download(asset, to: folder.appendingPathComponent("AnyCast.zip"))
+            _ = try await Tools.run("/usr/bin/ditto", ["-x", "-k", zip.path, folder.path])
             let app = folder.appendingPathComponent("AnyCast.app")
-            _ = try await Tools.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R", Self.requirement, app.path])
+            guard CodeSignature.satisfies(app, requirement) else {
+                throw Tools.Failure(message: "The update isn't signed by the same developer, so it was skipped")
+            }
 
             staged = app
             state = .ready(version)

@@ -120,6 +120,7 @@ final class MediaServer: @unchecked Sendable {
             }
         }
         guard start <= end else {
+            try? handle.close()
             return send(connection, status: "416 Range Not Satisfiable", headers: ["Content-Range": "bytes */\(size)", "Content-Length": "0"], thenClose: true)
         }
 
@@ -128,7 +129,10 @@ final class MediaServer: @unchecked Sendable {
         headers["Accept-Ranges"] = "bytes"
         if status.hasPrefix("206") { headers["Content-Range"] = "bytes \(start)-\(end)/\(size)" }
 
-        guard method != "HEAD" else { return send(connection, status: status, headers: headers, thenClose: true) }
+        guard method != "HEAD" else {
+            try? handle.close()
+            return send(connection, status: status, headers: headers, thenClose: true)
+        }
         send(connection, status: status, headers: headers, thenClose: false)
         try? handle.seek(toOffset: UInt64(start))
         pump(connection, handle: handle, remaining: end - start + 1)
@@ -262,7 +266,6 @@ private final class ChunkQueue: @unchecked Sendable {
         guard !chunks.isEmpty else { return nil }
         let chunk = chunks.removeFirst()
         bytes -= chunk.count
-        // Merge small pieces so each network send stays large.
         var merged = chunk
         while merged.count < 256 * 1024, !chunks.isEmpty {
             let next = chunks.removeFirst()

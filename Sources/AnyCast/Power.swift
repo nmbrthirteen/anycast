@@ -8,7 +8,7 @@ final class Power {
     private var sleepDisabled = false
 
     init() {
-        if UserDefaults.standard.bool(forKey: "sleepDisabledByAnyCast") { Self.pmset(disable: false) }
+        if UserDefaults.standard.bool(forKey: Pref.sleepDisabledByAnyCast) { Self.pmset(disable: false) }
     }
 
     func keepAwake(lidClosed: Bool) {
@@ -21,7 +21,7 @@ final class Power {
             guard Self.pmset(disable: true) else { return }
         }
         sleepDisabled = true
-        UserDefaults.standard.set(true, forKey: "sleepDisabledByAnyCast")
+        UserDefaults.standard.set(true, forKey: Pref.sleepDisabledByAnyCast)
         Self.restoreWhenAppExits()
     }
 
@@ -33,7 +33,7 @@ final class Power {
         guard sleepDisabled else { return }
         Self.pmset(disable: false)
         sleepDisabled = false
-        UserDefaults.standard.set(false, forKey: "sleepDisabledByAnyCast")
+        UserDefaults.standard.set(false, forKey: Pref.sleepDisabledByAnyCast)
     }
 
     // One admin prompt installs a rule that lets AnyCast toggle only this pmset setting without a password from then on.

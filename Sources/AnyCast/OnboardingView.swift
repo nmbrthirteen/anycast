@@ -2,7 +2,7 @@ import SwiftUI
 
 struct OnboardingView: View {
     @EnvironmentObject private var controller: CastController
-    @AppStorage("onboarded") private var onboarded = false
+    @AppStorage(Pref.onboarded) private var onboarded = false
     @State private var step = 0
     private let steps = 4
 
@@ -109,7 +109,7 @@ private struct FindTVStep: View {
                     Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange).font(.title2)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("No TV found yet").font(.headline)
-                        Text("Turn the TV on and join the same Wi-Fi. On Hisense TVs, turn on Anyview Stream.")
+                        Text("Turn the TV on and join the same Wi-Fi. If it still hides, turn on screen sharing, DLNA, or media sharing in the TV settings.")
                             .font(.callout).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)

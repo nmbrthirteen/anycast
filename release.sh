@@ -1,5 +1,5 @@
 #!/bin/zsh
-# usage: ./release.sh 1.0.1
+# Maintainer only: publishes a signed release to the GitHub repo.
 set -euo pipefail
 cd "$(dirname "$0")"
 VERSION=${1:?usage: ./release.sh <version>}

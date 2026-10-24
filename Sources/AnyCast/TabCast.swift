@@ -1,7 +1,6 @@
 import Foundation
 import Network
 
-// Receives a tab stream from the AnyCast browser extension over a local WebSocket.
 final class TabCastServer: @unchecked Sendable {
     static let port: UInt16 = 47801
     private let queue = DispatchQueue(label: "anycast.tabcast")
@@ -14,6 +13,11 @@ final class TabCastServer: @unchecked Sendable {
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
         websocket.maximumMessageSize = 32 << 20
+        // Any web page can reach localhost, so only browser extensions may send a stream.
+        websocket.setClientRequestHandler(queue) { _, headers in
+            let origin = headers.first { $0.name.lowercased() == "origin" }?.value ?? ""
+            return NWProtocolWebSocket.Response(status: origin.hasPrefix("chrome-extension://") ? .accept : .reject, subprotocol: nil)
+        }
         parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
         guard let listener = try? NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!) else {
             return Log.write("tab cast server could not start on port \(Self.port)")

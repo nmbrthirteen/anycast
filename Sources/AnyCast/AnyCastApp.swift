@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let index = args.firstIndex(of: "--snapshot"), index + 1 < args.count {
             let directory = args[index + 1]
             Task {
-                try? await Task.sleep(for: .seconds(UserDefaults.standard.double(forKey: "snapshotDelay").nonZero ?? 5))
+                try? await Task.sleep(for: .seconds(UserDefaults.standard.double(forKey: Pref.snapshotDelay).nonZero ?? 5))
                 await Snapshot.captureOwnWindows(to: directory)
             }
         }
@@ -66,7 +66,7 @@ struct MenuBarContent: View {
         }
         .onAppear(perform: controller.refreshPlaying)
         Button(controller.tvScreenOn ? "Turn off TV screen" : "Turn on TV screen") {
-            controller.tvScreenOn ? controller.stopTVScreen() : controller.startTVScreen()
+            controller.tvScreenOn ? controller.stop() : controller.startTVScreen()
         }
         Button("Mirror a window", action: controller.startMirrorWithPicker)
         if controller.plan != nil {
@@ -95,7 +95,7 @@ struct OpenSettingsButton: View {
 
     var body: some View {
         Button("Settings…") {
-            UserDefaults.standard.set(SidebarItem.settings.rawValue, forKey: "sidebar")
+            UserDefaults.standard.set(SidebarItem.settings.rawValue, forKey: Pref.sidebar)
             openWindow(id: "main")
             NSApp.activate()
         }

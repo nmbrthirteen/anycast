@@ -12,4 +12,9 @@ enum Pref {
     static let lowLatency = "lowLatency"
     static let muteMac = "muteMac"
     static let autoUpdate = "autoUpdate"
+    static let sidebar = "sidebar"
+    static let onboarded = "onboarded"
+    static let settingsSection = "settingsSection"
+    static let snapshotDelay = "snapshotDelay"
+    static let sleepDisabledByAnyCast = "sleepDisabledByAnyCast"
 }

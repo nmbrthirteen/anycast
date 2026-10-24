@@ -32,20 +32,32 @@ enum SidebarItem: Hashable, RawRepresentable {
 
 struct MainView: View {
     @EnvironmentObject private var controller: CastController
-    @AppStorage("sidebar") private var selection: SidebarItem?
+    @AppStorage(Pref.sidebar) private var selection: SidebarItem = .link
+    @AppStorage(Pref.onboarded) private var onboarded = false
     @State private var dropTargeted = false
-    @AppStorage("onboarded") private var onboarded = false
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar(selection: $selection)
-                .navigationSplitViewColumnWidth(min: 200, ideal: 230)
-        } detail: {
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .top) { StatusBanner() }
-                .safeAreaInset(edge: .bottom) { NowPlayingBar() }
+        TabView(selection: $selection) {
+            TabSection("Browsers") {
+                ForEach(controller.browsers) { browser in
+                    Tab(value: SidebarItem.browser(browser.name)) {
+                        page { TabsView(browser: browser) }
+                    } label: {
+                        Label { Text(browser.name) } icon: { Image(nsImage: browser.icon) }
+                    }
+                    .badge(browser.tabs.count)
+                }
+            }
+            TabSection("More ways to cast") {
+                Tab("Video link", systemImage: "link", value: SidebarItem.link) { page { LinkView() } }
+                Tab("Files", systemImage: "folder", value: SidebarItem.files) { page { FilesView() } }
+                Tab("Mirror", systemImage: "rectangle.on.rectangle", value: SidebarItem.mirror) { page { MirrorView() } }
+            }
+            TabSection("AnyCast") {
+                Tab("Settings", systemImage: "gearshape", value: SidebarItem.settings) { page { SettingsView() } }
+            }
         }
+        .tabViewStyle(.sidebarAdaptable)
         .toolbar { MainToolbar(selection: $selection) }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             _ = providers.first?.loadObject(ofClass: URL.self) { url, _ in
@@ -58,69 +70,24 @@ struct MainView: View {
         .sheet(isPresented: Binding(get: { !onboarded }, set: { onboarded = !$0 })) {
             OnboardingView().environmentObject(controller).interactiveDismissDisabled()
         }
-        .onAppear {
-            controller.refreshTabs()
-        }
+        .onAppear(perform: controller.refreshTabs)
         .onChange(of: controller.browsers.map(\.name)) { _, names in
-            if selection == nil, let first = names.first { selection = .browser(first) }
+            if case .browser(let name) = selection, !names.contains(name) { selection = names.first.map(SidebarItem.browser) ?? .link }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in controller.refreshTabs() }
     }
 
-    @ViewBuilder
-    private var detail: some View {
-        switch selection {
-        case .browser(let name):
-            if let browser = controller.browsers.first(where: { $0.name == name }) {
-                TabsView(browser: browser)
-            } else {
-                ContentUnavailableView("\(name) is closed", systemImage: "safari", description: Text("Open it to see its tabs here."))
-            }
-        case .files: FilesView()
-        case .mirror: MirrorView()
-        case .settings: SettingsView()
-        case .link, nil: LinkView()
-        }
-    }
-}
-
-struct Sidebar: View {
-    @EnvironmentObject private var controller: CastController
-    @Binding var selection: SidebarItem?
-
-    var body: some View {
-        List(selection: $selection) {
-            Section("TV") { TVRow() }
-            Section("Browsers") {
-                ForEach(controller.browsers) { browser in
-                    Label {
-                        Text(browser.name)
-                    } icon: {
-                        Image(nsImage: browser.icon).resizable().frame(width: 18, height: 18)
-                    }
-                    .badge(browser.tabs.count)
-                    .tag(SidebarItem.browser(browser.name))
-                }
-                if controller.browsers.isEmpty && !controller.loadingTabs {
-                    Text("No browser open").foregroundStyle(.secondary)
-                }
-            }
-            Section("More ways to cast") {
-                Label("Video link", systemImage: "link").tag(SidebarItem.link)
-                Label("Files", systemImage: "folder").tag(SidebarItem.files)
-                Label("Mirror", systemImage: "rectangle.on.rectangle").tag(SidebarItem.mirror)
-            }
-            Section {
-                Label("Settings", systemImage: "gearshape").tag(SidebarItem.settings)
-            }
-        }
-        .listStyle(.sidebar)
+    private func page(@ViewBuilder _ content: () -> some View) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .top) { StatusBanner() }
+            .safeAreaInset(edge: .bottom) { NowPlayingBar() }
     }
 }
 
 struct MainToolbar: ToolbarContent {
     @EnvironmentObject private var controller: CastController
-    @Binding var selection: SidebarItem?
+    @Binding var selection: SidebarItem
 
     var body: some ToolbarContent {
         ToolbarItem(placement: .navigation) {
@@ -165,38 +132,6 @@ struct TVMenu: View {
         }
         .menuIndicator(.visible)
         .fixedSize()
-    }
-}
-
-struct TVRow: View {
-    @EnvironmentObject private var controller: CastController
-
-    private var status: String {
-        if let plan = controller.plan { return controller.isPlaying ? "Playing \(plan.title)" : "Paused" }
-        if controller.renderer != nil { return "Ready" }
-        return controller.scanning ? "Looking on your Wi-Fi" : "Not found"
-    }
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Image(systemName: controller.renderer == nil ? "tv.slash" : "tv")
-                .foregroundStyle(controller.renderer == nil ? Color.secondary : Color.green)
-                .frame(width: 30, height: 30)
-                .glassEffect(.regular, in: .rect(cornerRadius: 8))
-            VStack(alignment: .leading, spacing: 1) {
-                Text(controller.renderer?.name ?? "No TV").fontWeight(.medium).lineLimit(1)
-                Text(status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-            }
-            Spacer(minLength: 0)
-            if controller.scanning { ProgressView().controlSize(.small) }
-        }
-        .padding(.vertical, 2)
-        .contextMenu {
-            ForEach(controller.renderers) { tv in
-                Button(tv.name) { controller.selectedID = tv.id }
-            }
-            Button("Scan again", action: controller.scan)
-        }
     }
 }
 

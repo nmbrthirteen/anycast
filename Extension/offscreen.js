@@ -34,7 +34,6 @@ async function start(streamId, title) {
     return notify("error");
   }
 
-  // The tab is muted while captured, so its sound only plays on the TV.
   socket = new WebSocket(ANYCAST);
   socket.binaryType = "arraybuffer";
   socket.onerror = () => { stop(); notify("error"); };

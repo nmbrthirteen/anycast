@@ -2,38 +2,27 @@ import ServiceManagement
 import SwiftUI
 
 struct SettingsView: View {
-    enum Section: String, CaseIterable, Identifiable {
-        case general = "General", quality = "Quality", mirroring = "Mirroring", power = "Power", permissions = "Permissions", about = "About"
-        var id: String { rawValue }
+    enum Section: String {
+        case general, quality, mirroring, power, permissions, about
     }
 
-    @AppStorage("settingsSection") private var section = Section.general
+    @AppStorage(Pref.settingsSection) private var section = Section.general
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("Section", selection: $section) {
-                ForEach(Section.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(maxWidth: 560)
-            .padding(.top, 16)
-            .padding(.bottom, 4)
-
-            Group {
-                switch section {
-                case .general: GeneralSettings()
-                case .quality: QualitySettings()
-                case .mirroring: MirroringSettings()
-                case .power: PowerSettings()
-                case .permissions: PermissionSettings()
-                case .about: AboutSettings()
-                }
-            }
-            .frame(maxWidth: 640, maxHeight: .infinity, alignment: .top)
+        TabView(selection: $section) {
+            Tab("General", systemImage: "gearshape", value: Section.general) { page { GeneralSettings() } }
+            Tab("Quality", systemImage: "sparkles.tv", value: Section.quality) { page { QualitySettings() } }
+            Tab("Mirroring", systemImage: "rectangle.on.rectangle", value: Section.mirroring) { page { MirroringSettings() } }
+            Tab("Power", systemImage: "bolt", value: Section.power) { page { PowerSettings() } }
+            Tab("Permissions", systemImage: "lock.shield", value: Section.permissions) { page { PermissionSettings() } }
+            Tab("About", systemImage: "info.circle", value: Section.about) { page { AboutSettings() } }
         }
-        .frame(maxWidth: .infinity)
+        .tabViewStyle(.tabBarOnly)
         .navigationTitle("Settings")
+    }
+
+    private func page(@ViewBuilder _ content: () -> some View) -> some View {
+        content().frame(maxWidth: 640, maxHeight: .infinity, alignment: .top).frame(maxWidth: .infinity)
     }
 }
 
@@ -59,7 +48,7 @@ private struct GeneralSettings: View {
                     }
                 if let loginError { Text(loginError).font(.caption).foregroundStyle(.red) }
                 Toggle("Show in menu bar", isOn: $showMenuBar)
-                Button("Show welcome guide") { UserDefaults.standard.set(false, forKey: "onboarded") }
+                Button("Show welcome guide") { UserDefaults.standard.set(false, forKey: Pref.onboarded) }
             }
             Section {
                 Toggle("Pause the video in the browser when casting", isOn: $pauseBrowser)
@@ -79,7 +68,7 @@ private struct GeneralSettings: View {
             } header: {
                 Text("Browser extension")
             } footer: {
-                Text("Works in Chrome and Helium. Click its icon on any tab to send that tab's video and sound to the TV. It keeps playing when you switch desktops.")
+                Text("Works in Chrome and other Chromium browsers. Click its icon on any tab to send that tab's video and sound to the TV. It keeps playing when you switch desktops.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -125,7 +114,6 @@ private struct QualitySettings: View {
                     LabeledContent("Name", value: tv.name)
                     LabeledContent("Model", value: tv.model.isEmpty ? "Unknown" : tv.model)
                     LabeledContent("Address", value: tv.host)
-                    LabeledContent("Tested", value: "1080p at 60 fps, H.264, AAC")
                 }
             }
         }
@@ -146,7 +134,7 @@ private struct MirroringSettings: View {
             Section {
                 Toggle("Low delay", isOn: $lowLatency)
             } footer: {
-                Text("Your TV holds about 6 seconds of video before it plays. Low delay briefly speeds up the start so the TV catches up to about 4 seconds, the lowest it can hold without stuttering.")
+                Text("TVs hold a few seconds of video before they play. Low delay briefly speeds up the stream so the TV catches up to the shortest buffer it can hold without stuttering.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {

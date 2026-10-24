@@ -6,14 +6,14 @@ import VirtualDisplayKit
 final class TVScreen {
     private var display: AnyCastVirtualDisplay?
     var displayID: CGDirectDisplayID? { display?.displayID }
-    var isOn: Bool { display != nil }
 
     // A fixed identity keeps macOS from piling up a new color profile and arrangement for every session.
     func turnOn() async throws -> CGDirectDisplayID {
         if let id = displayID { return id }
         let display = try AnyCastVirtualDisplay(name: "AnyCast TV", width: 1920, height: 1080, refreshRate: 60, productID: 0x7A01)
         self.display = display
-        for _ in 0..<30 where !Self.isOnline(display.displayID) {
+        for attempt in 0..<60 where !Self.isOnline(display.displayID) {
+            if attempt == 10 { _ = await DisplayPrompt.chooseExtended(for: display.displayID) }
             try await Task.sleep(for: .milliseconds(100))
         }
         guard Self.isOnline(display.displayID) else {

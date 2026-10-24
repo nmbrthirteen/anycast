@@ -1,6 +1,6 @@
 import Foundation
 
-struct Renderer: Identifiable, Hashable, Codable {
+struct Renderer: Identifiable, Hashable {
     let id: String
     let name: String
     let model: String
@@ -198,7 +198,7 @@ struct DLNAClient {
         """
     }
 
-    static func escape(_ text: String) -> String {
+    private static func escape(_ text: String) -> String {
         text.replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")

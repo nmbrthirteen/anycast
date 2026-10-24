@@ -26,14 +26,12 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var stream: SCStream?
     private var latestFrame: Data?
     private var audio: [Float] = []
-    private(set) var encoderStarted: Date?
     private var streamClock = StreamClock()
     var speed: Double {
         get { streamClock.speed }
         set { streamClock.speed = newValue }
     }
     var streamSeconds: Double { streamClock.now() }
-    private(set) var audioPeak: Float = 0
     private var stats = (frames: 0, newFrames: 0, padded: 0, dropped: 0, captured: 0, received: 0, consumed: 0)
 
     func takeStats() -> String {
@@ -232,9 +230,7 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     interleaved[i * 2 + 1] = samples[i * channels + (channels > 1 ? 1 : 0)]
                 }
             }
-            let peak = interleaved.reduce(0) { max($0, abs($1)) }
             lock.lock()
-            audioPeak = max(audioPeak * 0.9, peak)
             stats.received += frames
             audio.append(contentsOf: interleaved)
             let cap = Self.sampleRate * 2 * 2
@@ -259,7 +255,6 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     }
 
     fileprivate func markEncoderStart(_ date: Date) -> StreamClock {
-        encoderStarted = date
         streamClock = StreamClock()
         return streamClock
     }

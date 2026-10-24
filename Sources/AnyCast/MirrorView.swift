@@ -32,7 +32,7 @@ struct MirrorView: View {
             }
         }
         .navigationTitle("Mirror")
-        .navigationSubtitle("Sound is included. Your TV shows up to 1080p.")
+        .navigationSubtitle("Sound is included, at up to 1080p.")
         .toolbar {
             ToolbarItem {
                 Button("macOS picker", systemImage: "macwindow.on.rectangle", action: controller.startMirrorWithPicker)
@@ -77,7 +77,7 @@ struct TVScreenCard: View {
             }
             Spacer()
             if controller.tvScreenOn {
-                Button("Turn off", action: controller.stopTVScreen).buttonStyle(.glass).controlSize(.large)
+                Button("Turn off", action: controller.stop).buttonStyle(.glass).controlSize(.large)
             } else {
                 Button("Turn on", systemImage: "rectangle.portrait.and.arrow.right", action: controller.startTVScreen)
                     .buttonStyle(.glassProminent).controlSize(.large)
@@ -124,7 +124,7 @@ struct NowPlayingCard: View {
                 .controlSize(.large)
                 .fixedSize()
             } else {
-                Button("Send to TV", systemImage: "play.rectangle.on.rectangle.fill", action: controller.mirrorPlayingMedia)
+                Button("Send to TV", systemImage: "play.rectangle.on.rectangle.fill", action: { controller.sendToTV(nil) })
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
                     .disabled(controller.playingApps.isEmpty)

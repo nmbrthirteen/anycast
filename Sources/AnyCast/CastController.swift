@@ -34,19 +34,24 @@ final class CastController: ObservableObject {
     @AppStorage(Pref.lowLatency) var lowLatency = true
     @AppStorage(Pref.muteMac) var muteMac = true
 
+    let mirror = ScreenMirror()
+    let browser = BrowserWatcher()
+    let tvScreen = TVScreen()
+    let recentApps = RecentApps()
+    var sentApp: PlayingApp?
+    var restoreTask: Task<Void, Never>?
+    var handledLaunchArguments = false
     private let server = MediaServer()
-    private let mirror = ScreenMirror()
-    private let browser = BrowserWatcher()
     private let power = Power()
     private let tabServer = TabCastServer()
-    private let tvScreen = TVScreen()
+    private var screenObserver: NSObjectProtocol?
+    private var emptyScans = 0
     private var offset = 0.0
     private var hasPlayed = false
     private var castStarted = Date()
     private var pollTask: Task<Void, Never>?
     private var volumeTask: Task<Void, Never>?
 
-    var browserName: String? { browser.lastBrowser }
     var renderer: Renderer? { renderers.first { $0.id == selectedID } ?? renderers.first }
     var isPlaying: Bool { tvState == "PLAYING" || tvState == "TRANSITIONING" }
     var canSeek: Bool { plan.map { $0.duration > 0 && $0.kind != .image } ?? false }
@@ -57,8 +62,11 @@ final class CastController: ObservableObject {
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         try? server.start()
         mirror.onStopped = { [weak self] error in Task { @MainActor in self?.mirrorStopped(error) } }
-        trackRecentApps()
-        watchScreenChanges()
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensChanged() }
+        }
         tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
         tabServer.start()
         Extension.install()
@@ -69,18 +77,8 @@ final class CastController: ObservableObject {
         guard !scanning else { return }
         scanning = true
         Task {
-            var locations = await Task.detached { SSDP.search() }.value
-            if let known = UserDefaults.standard.string(forKey: "knownTVs").map({ $0.split(separator: " ").compactMap { URL(string: String($0)) } }) {
-                locations += known.filter { !locations.contains($0) }
-            }
-            var found: [Renderer] = []
-            await withTaskGroup(of: Renderer?.self) { group in
-                for location in locations { group.addTask { try? await DeviceDescription.load(location) } }
-                for await renderer in group { if let renderer, !found.contains(where: { $0.avTransport == renderer.avTransport }) { found.append(renderer) } }
-            }
-            renderers = found.sorted { $0.name < $1.name }
-            if !renderers.isEmpty { UserDefaults.standard.set(renderers.map(\.id).joined(separator: " "), forKey: "knownTVs") }
-            if renderer == nil || !renderers.contains(where: { $0.id == selectedID }) {
+            renderers = await TVDiscovery.find()
+            if !renderers.contains(where: { $0.id == selectedID }) {
                 selectedID = renderers.first(where: { $0.name == UserDefaults.standard.string(forKey: "selectedTVName") })?.id ?? renderers.first?.id
             }
             if let name = renderer?.name { UserDefaults.standard.set(name, forKey: "selectedTVName") }
@@ -88,7 +86,6 @@ final class CastController: ObservableObject {
             if renderers.isEmpty && emptyScans < 3 {
                 emptyScans += 1
                 try? await Task.sleep(for: .seconds(3))
-                scanning = false
                 return scan()
             }
             emptyScans = 0
@@ -97,33 +94,6 @@ final class CastController: ObservableObject {
             Log.write("scan found \(renderers.map { "\($0.name) \($0.id)" })")
             if let client { volume = Double((try? await client.volume()) ?? 0) }
             handleLaunchArguments()
-        }
-    }
-
-    private var handledLaunchArguments = false
-    private var emptyScans = 0
-
-    private func handleLaunchArguments() {
-        guard !handledLaunchArguments, renderer != nil else { return }
-        handledLaunchArguments = true
-        let args = CommandLine.arguments
-        if let index = args.firstIndex(of: "--cast"), index + 1 < args.count {
-            let target = args[index + 1]
-            target.hasPrefix("http") ? castLink(target) : castFile(URL(fileURLWithPath: target))
-        } else if let index = args.firstIndex(of: "--send"), index + 1 < args.count {
-            refreshPlaying()
-            sendToTV(playingApps.first { $0.name == args[index + 1] })
-        } else if args.contains("--tv-screen") {
-            startTVScreen()
-        } else if args.contains("--cast-tab") {
-            castCurrentTab()
-        } else if args.contains("--mirror") {
-            refreshPlaying()
-            if playingApps.isEmpty {
-                Task { if let screen = try? await ScreenMirror.targets().first { startMirror(screen) } }
-            } else {
-                mirrorPlayingMedia()
-            }
         }
     }
 
@@ -151,8 +121,9 @@ final class CastController: ObservableObject {
         } catch {
             Log.write("extract failed (\(error.localizedDescription)), mirroring \(tab.browser)")
             await browser.bringToFront(tab)
-            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID(of: tab.browser)).first {
-                try await mirrorWindow(of: PlayingApp(name: tab.browser, bundleID: bundleID(of: tab.browser), pid: app.processIdentifier))
+            let bundleID = BrowserWatcher.bundleID(forName: tab.browser) ?? ""
+            if let app = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first {
+                try await mirrorWindow(of: PlayingApp(name: tab.browser, bundleID: bundleID, pid: app.processIdentifier))
             } else {
                 try await mirrorWithPicker()
             }
@@ -163,10 +134,6 @@ final class CastController: ObservableObject {
         let position = pauseBrowser ? await browser.pauseVideo(in: tab) : nil
         resumed.startAt = resumePosition ? position ?? 0 : 0
         try await cast(resumed)
-    }
-
-    private func bundleID(of browserName: String) -> String {
-        BrowserWatcher.bundleID(forName: browserName) ?? ""
     }
 
     func castLink(_ text: String) {
@@ -181,183 +148,6 @@ final class CastController: ObservableObject {
         recentFiles = Array(([url] + recentFiles.filter { $0 != url }).prefix(8))
         UserDefaults.standard.set(recentFiles.map(\.path), forKey: "recentFiles")
         run("Preparing \(url.lastPathComponent)") { [self] in try await cast(try await Planner.plan(file: url, profile: profile)) }
-    }
-
-    func loadMirrorTargets() {
-        guard ScreenMirror.hasPermission else { return }
-        Task {
-            mirrorTargets = (try? await ScreenMirror.targets()) ?? []
-            for target in mirrorTargets {
-                if let image = await ScreenMirror.thumbnail(for: target) { thumbnails[target.id] = image }
-            }
-        }
-    }
-
-    func startMirror(_ target: MirrorTarget) {
-        run("Starting mirroring") { [self] in try await mirrorCast(target) }
-    }
-
-    // Most recently used apps first, so Send to TV picks the browser you were just watching.
-    private var recentApps: [pid_t] = []
-    private var sentApp: PlayingApp?
-    private var screenObserver: NSObjectProtocol?
-    private var restoreTask: Task<Void, Never>?
-
-    private func watchScreenChanges() {
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.screensChanged() }
-        }
-    }
-
-    // Closing the lid turns off the built-in screen and macOS shuffles windows; put the video back in front once things settle.
-    private func screensChanged() {
-        guard tvScreenOn, let app = sentApp else { return }
-        restoreTask?.cancel()
-        restoreTask = Task {
-            try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, tvScreenOn, let bounds = tvScreen.bounds else { return }
-            await WindowMover.restore(app.pid, on: bounds)
-        }
-    }
-    private var activationObserver: NSObjectProtocol?
-
-    private func trackRecentApps() {
-        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let pid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier else { return }
-            MainActor.assumeIsolated {
-                self?.recentApps.removeAll { $0 == pid }
-                self?.recentApps.insert(pid, at: 0)
-            }
-        }
-    }
-
-    func refreshPlaying() {
-        let rank = { (pid: pid_t) in self.recentApps.firstIndex(of: pid) ?? Int.max }
-        playingApps = MediaDetector.appsPlayingAudio().sorted { rank($0.pid) < rank($1.pid) }
-    }
-
-    func mirrorPlayingMedia() { sendToTV(nil) }
-
-    func sendToTV(_ chosen: PlayingApp?) {
-        run("Finding what's playing") { [self] in
-            refreshPlaying()
-            guard let app = chosen ?? playingApps.first else {
-                throw Tools.Failure(message: "Nothing is playing sound right now. Start the video, then try again.")
-            }
-            if WindowMover.isAllowed {
-                try await sendToTVScreen(app)
-            } else {
-                WindowMover.requestPermission()
-                try await mirrorWindow(of: app)
-                message = "Allow AnyCast in Accessibility settings so it can move videos onto the TV screen. That keeps them playing on any desktop."
-            }
-        }
-    }
-
-    func startTVScreen() {
-        run("Turning on the TV screen") { [self] in try await showTVScreen() }
-    }
-
-    func stopTVScreen() { stop() }
-
-    private func showTVScreen() async throws {
-        let id = try await tvScreen.turnOn()
-        tvScreenOn = true
-        if plan?.mode == .mirror, mirror.displayID == id { return }
-        try await mirror.start(MirrorTarget(kind: .display(id), title: "TV screen"), settings: mirrorSettings)
-        try await castMirror(title: "TV screen")
-    }
-
-    private func sendToTVScreen(_ app: PlayingApp) async throws {
-        _ = try await tvScreen.turnOn()
-        tvScreenOn = true
-        guard let bounds = tvScreen.bounds, await WindowMover.moveFrontWindow(of: app.pid, to: bounds) else {
-            try await showTVScreen()
-            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
-        }
-        Log.write("moved \(app.name) onto the tv screen")
-        sentApp = app
-        try await showTVScreen()
-    }
-
-    private func mirrorWindow(of app: PlayingApp) async throws {
-        guard ScreenMirror.hasPermission else { return try await mirrorWithPicker() }
-        guard var window = try await ScreenMirror.frontWindow(of: app.pid) else {
-            if ScreenMirror.hasWindowOnOtherDesktop(app.pid) { throw Tools.Failure(message: Self.otherDesktopMessage(app.name)) }
-            return try await mirrorWithPicker()
-        }
-        if let browser = BrowserWatcher.name(forBundleID: app.bundleID) {
-            window.crop = await self.browser.videoFrame(inFrontTabOf: browser)
-        }
-        Log.write("mirroring playing app \(app.name) crop=\(window.crop.map { "\($0)" } ?? "none")")
-        try await mirrorCast(window)
-    }
-
-    func startMirrorWithPicker() {
-        run("Choose what to mirror") { [self] in
-            do {
-                try await mirrorWithPicker()
-            } catch is CancellationError {
-            } catch let error as SCStreamError where error.code == .userDeclined {
-                throw Tools.Failure(message: "macOS blocked screen capture. Allow AnyCast in System Settings, Privacy & Security, Screen & System Audio Recording.")
-            }
-        }
-    }
-
-    private var mirrorSettings: MirrorSettings {
-        MirrorSettings(fps: mirrorFPS, bitrateMbps: mirrorBitrate, maxHeight: min(maxHeight == 0 ? 1080 : maxHeight, 1080),
-                       showsCursor: mirrorCursor, capturesAudio: mirrorAudio)
-    }
-
-    private func mirrorCast(_ target: MirrorTarget) async throws {
-        guard ScreenMirror.hasPermission else { return try await mirrorWithPicker() }
-        do {
-            try await mirror.start(target, settings: mirrorSettings)
-        } catch let error as SCStreamError where error.code == .userDeclined {
-            return try await mirrorWithPicker()
-        }
-        try await castMirror(title: target.title)
-    }
-
-    private func mirrorWithPicker() async throws {
-        let filter = try await ScreenMirror.pickWithSystemPicker()
-        try await mirror.start(filter: filter, settings: mirrorSettings)
-        try await castMirror(title: "Screen mirroring")
-    }
-
-    // Display changes (like the macOS "show on AnyCast TV" prompt) can stop capture; the TV screen just restarts it.
-    private func mirrorStopped(_ error: Error?) {
-        Log.write("capture stopped: \(error?.localizedDescription ?? "no error")")
-        guard plan?.mode == .mirror else { return }
-        guard tvScreenOn, let id = tvScreen.displayID else { return stop() }
-        Task {
-            try? await Task.sleep(for: .seconds(1))
-            do {
-                try await mirror.start(MirrorTarget(kind: .display(id), title: "TV screen"), settings: mirrorSettings)
-                Log.write("capture restarted on tv screen")
-            } catch {
-                stop()
-            }
-        }
-    }
-
-    private func castTabStream(_ session: TabSession) {
-        session.onEnded = { [weak self] in
-            Task { @MainActor in if self?.plan?.mode == .tab { self?.stop() } }
-        }
-        run("Sending \(session.title) to the TV") { [self] in
-            try await cast(CastPlan(title: session.title, kind: .video, duration: 0, mode: .tab, source: .mirror(make: { session.makeProducer() })))
-        }
-    }
-
-    private func castMirror(title: String) async throws {
-        if muteMac && mirrorAudio { MacAudio.mute() }
-        let mirror = self.mirror
-        try await cast(CastPlan(title: title, kind: .video, duration: 0, mode: .mirror, source: .mirror(make: { mirror.makeProducer() })))
     }
 
     func useFallback() {
@@ -432,7 +222,7 @@ final class CastController: ObservableObject {
         position = 0
     }
 
-    private func run(_ status: String, _ work: @escaping () async throws -> Void) {
+    func run(_ status: String, _ work: @escaping () async throws -> Void) {
         guard renderer != nil else {
             message = "No TV selected. Scan for your TV first."
             return
@@ -449,7 +239,7 @@ final class CastController: ObservableObject {
         }
     }
 
-    private func cast(_ plan: CastPlan) async throws {
+    func cast(_ plan: CastPlan) async throws {
         guard let renderer, let client else { return }
         pollTask?.cancel()
         server.clear()
@@ -485,21 +275,6 @@ final class CastController: ObservableObject {
         tvState = "TRANSITIONING"
         if !plan.seeksByRestart && plan.startAt > 5 { startSeekWhenReady(client, to: plan.startAt) }
         startPolling(client)
-    }
-
-    private static func otherDesktopMessage(_ app: String) -> String {
-        "\(app)'s video is on another desktop, and macOS doesn't draw windows there, so the TV would show black. Keep it on the desktop you're using, or pop the video out with picture in picture."
-    }
-
-    private func tuneMirrorLatency(tvPosition: Double) {
-        if let id = mirror.windowID, !ScreenMirror.isOnScreen(id), message == nil, let title = plan?.title {
-            message = Self.otherDesktopMessage(String(title.split(separator: ":").first ?? "The"))
-        }
-        let buffered = mirror.streamSeconds - tvPosition
-        if lowLatency {
-            if buffered > 5.2 { mirror.speed = 0.7 } else if buffered < 4.6 { mirror.speed = 1 }
-        }
-        Log.write(String(format: "mirror buffered %.1fs speed %.1f | ", buffered, mirror.speed) + mirror.takeStats())
     }
 
     private func startSeekWhenReady(_ client: DLNAClient, to seconds: Double) {

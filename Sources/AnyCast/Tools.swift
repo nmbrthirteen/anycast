@@ -5,8 +5,8 @@ enum Tools {
     static let ffprobe = find("ffprobe")
     static let ytdlp = find("yt-dlp")
 
-    private static func find(_ name: String) -> String? {
-        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", NSHomeDirectory() + "/.local/bin"]
+    static func find(_ name: String) -> String? {
+        ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", NSHomeDirectory() + "/.local/bin"]
             .map { "\($0)/\(name)" }
             .first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -28,8 +28,11 @@ enum Tools {
         try process.run()
         return try await withCheckedThrowingContinuation { continuation in
             Thread.detachNewThread {
+                var errors = Data()
+                let errorReader = Thread { errors = err.fileHandleForReading.readDataToEndOfFile() }
+                errorReader.start()
                 let output = out.fileHandleForReading.readDataToEndOfFile()
-                let errors = err.fileHandleForReading.readDataToEndOfFile()
+                while !errorReader.isFinished { usleep(1000) }
                 process.waitUntilExit()
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: output)
@@ -86,9 +89,8 @@ struct ProbeResult {
     var formatName = ""
     var videoBitrate = 0
 
-    static func probe(_ input: String, headers: String? = nil) async -> ProbeResult? {
+    static func probe(_ input: String) async -> ProbeResult? {
         var args = ["-v", "error", "-show_entries", "stream=codec_type,codec_name,height,bit_rate:format=duration,format_name,bit_rate", "-of", "json"]
-        if let headers { args += ["-headers", headers] }
         args.append(input)
         guard let data = try? await Tools.run(Tools.ffprobe, args),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
