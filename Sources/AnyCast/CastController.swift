@@ -58,6 +58,7 @@ final class CastController: ObservableObject {
         try? server.start()
         mirror.onStopped = { [weak self] error in Task { @MainActor in self?.mirrorStopped(error) } }
         trackRecentApps()
+        watchScreenChanges()
         tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
         tabServer.start()
         Extension.install()
@@ -195,6 +196,28 @@ final class CastController: ObservableObject {
 
     // Most recently used apps first, so Send to TV picks the browser you were just watching.
     private var recentApps: [pid_t] = []
+    private var sentApp: PlayingApp?
+    private var screenObserver: NSObjectProtocol?
+    private var restoreTask: Task<Void, Never>?
+
+    private func watchScreenChanges() {
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.screensChanged() }
+        }
+    }
+
+    // Closing the lid turns off the built-in screen and macOS shuffles windows; put the video back in front once things settle.
+    private func screensChanged() {
+        guard tvScreenOn, let app = sentApp else { return }
+        restoreTask?.cancel()
+        restoreTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled, tvScreenOn, let bounds = tvScreen.bounds else { return }
+            await WindowMover.restore(app.pid, on: bounds)
+        }
+    }
     private var activationObserver: NSObjectProtocol?
 
     private func trackRecentApps() {
@@ -254,6 +277,7 @@ final class CastController: ObservableObject {
             throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
         }
         Log.write("moved \(app.name) onto the tv screen")
+        sentApp = app
         try await showTVScreen()
     }
 
@@ -394,6 +418,7 @@ final class CastController: ObservableObject {
         pollTask?.cancel()
         tvScreen.turnOff()
         tvScreenOn = false
+        sentApp = nil
         MacAudio.restore()
         mirror.speed = 1
         server.clear()

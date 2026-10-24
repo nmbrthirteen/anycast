@@ -97,6 +97,21 @@ enum WindowMover {
         return true
     }
 
+    // Brings the app back on top. If its window left the TV screen (the lid closed and macOS rearranged things), it moves back.
+    static func restore(_ pid: pid_t, on bounds: CGRect) async {
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        let app = AXUIElementCreateApplication(pid)
+        guard let window = frontWindow(of: app) else { return }
+        let onTV = framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
+        if onTV {
+            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            if !bool(window, "AXFullScreen") { AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanTrue) }
+        } else {
+            _ = await moveFrontWindow(of: pid, to: bounds)
+        }
+        Log.write("restored pid \(pid) on tv screen (was on tv: \(onTV))")
+    }
+
     private static func frontWindow(of app: AXUIElement) -> AXUIElement? {
         for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
             var value: CFTypeRef?
