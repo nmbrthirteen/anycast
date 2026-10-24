@@ -16,9 +16,10 @@ struct OnboardingView: View {
                 default: DoneStep()
                 }
             }
+            .id(step)
+            .transition(.opacity)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(.horizontal, 40)
-            .transition(.opacity)
 
             HStack {
                 HStack(spacing: 6) {
