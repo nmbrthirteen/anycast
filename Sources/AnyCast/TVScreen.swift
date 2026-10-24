@@ -68,33 +68,75 @@ enum WindowMover {
         AXIsProcessTrustedWithOptions([prompt: true] as CFDictionary)
     }
 
-    // Full screen windows can't be moved, so they leave full screen, move, then go full screen again on the TV screen.
+    // Full screen windows can't be moved, and macOS puts a window back where it was when full screen ends,
+    // so every step waits until macOS reports it finished before the next one starts.
     static func moveFrontWindow(of pid: pid_t, to bounds: CGRect) async -> Bool {
+        NSRunningApplication(processIdentifier: pid)?.activate()
         let app = AXUIElementCreateApplication(pid)
         guard let window = frontWindow(of: app) else {
             Log.write("move: no window found for pid \(pid)")
             return false
         }
-        let wasFullScreen = bool(window, "AXFullScreen")
-        if wasFullScreen {
+        if bool(window, "AXFullScreen") {
             AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-            try? await Task.sleep(for: .milliseconds(900))
+            guard await waitUntil({ !bool(window, "AXFullScreen") }) else {
+                Log.write("move: window stayed full screen")
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(800))
         }
         if bool(window, kAXMinimizedAttribute) {
             AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
-            try? await Task.sleep(for: .milliseconds(400))
+            try? await Task.sleep(for: .milliseconds(500))
         }
-        var origin = CGPoint(x: bounds.minX + 40, y: bounds.minY + 40)
-        var size = CGSize(width: bounds.width - 80, height: bounds.height - 80)
-        guard let position = AXValueCreate(.cgPoint, &origin), let dimensions = AXValueCreate(.cgSize, &size) else { return false }
-        let moved = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
-        let resized = AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
-        try? await Task.sleep(for: .milliseconds(300))
-        let landed = framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
-        Log.write("move: fullscreen=\(wasFullScreen) move=\(moved.rawValue) resize=\(resized.rawValue) landed=\(landed)")
+
+        var landed = false
+        for attempt in 1...4 where !landed {
+            var origin = CGPoint(x: bounds.minX + 40, y: bounds.minY + 40)
+            var size = CGSize(width: bounds.width - 80, height: bounds.height - 80)
+            if let position = AXValueCreate(.cgPoint, &origin), let dimensions = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
+                AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
+                AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
+            }
+            try? await Task.sleep(for: .milliseconds(500))
+            landed = isInside(window, bounds)
+            Log.write("move: attempt \(attempt) landed=\(landed) at \(framePosition(window).map { "\($0)" } ?? "?")")
+        }
         guard landed else { return false }
+
+        AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanTrue)
+        _ = await waitUntil({ bool(window, "AXFullScreen") })
+        try? await Task.sleep(for: .milliseconds(800))
+        let stayed = isInside(window, bounds)
+        Log.write("move: full screen on tv=\(stayed)")
+        if !stayed {
+            AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
+            _ = await waitUntil({ !bool(window, "AXFullScreen") })
+            try? await Task.sleep(for: .milliseconds(800))
+            var origin = CGPoint(x: bounds.minX, y: bounds.minY)
+            var size = bounds.size
+            if let position = AXValueCreate(.cgPoint, &origin), let dimensions = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
+                AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
+            }
+            return isInside(window, bounds)
+        }
         return true
+    }
+
+    private static func waitUntil(_ condition: () -> Bool, timeout: Double = 4) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(150))
+        }
+        return condition()
+    }
+
+    private static func isInside(_ window: AXUIElement, _ bounds: CGRect) -> Bool {
+        framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
     }
 
     // Brings the app back on top. If its window left the TV screen (the lid closed and macOS rearranged things), it moves back.

@@ -110,6 +110,9 @@ final class CastController: ObservableObject {
         if let index = args.firstIndex(of: "--cast"), index + 1 < args.count {
             let target = args[index + 1]
             target.hasPrefix("http") ? castLink(target) : castFile(URL(fileURLWithPath: target))
+        } else if let index = args.firstIndex(of: "--send"), index + 1 < args.count {
+            refreshPlaying()
+            sendToTV(playingApps.first { $0.name == args[index + 1] })
         } else if args.contains("--tv-screen") {
             startTVScreen()
         } else if args.contains("--cast-tab") {
