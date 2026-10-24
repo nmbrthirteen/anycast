@@ -97,7 +97,9 @@ struct NowPlayingCard: View {
                let icon = NSRunningApplication(processIdentifier: app.pid)?.icon {
                 Image(nsImage: icon).resizable().frame(width: 44, height: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("\(app.name) is playing").font(.headline)
+                    Text(controller.playingApps.count > 1
+                         ? controller.playingApps.map(\.name).joined(separator: " and ") + " are playing"
+                         : "\(app.name) is playing").font(.headline)
                     Text("Moves its window onto the TV screen so it keeps playing on any desktop.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
@@ -109,10 +111,24 @@ struct NowPlayingCard: View {
                 }
             }
             Spacer()
-            Button("Send to TV", systemImage: "play.rectangle.on.rectangle.fill", action: controller.mirrorPlayingMedia)
+            if controller.playingApps.count > 1 {
+                Menu {
+                    ForEach(controller.playingApps, id: \.pid) { app in
+                        Button(app.name) { controller.sendToTV(app) }
+                    }
+                } label: {
+                    Label("Send to TV", systemImage: "play.rectangle.on.rectangle.fill")
+                }
+                .menuStyle(.button)
                 .buttonStyle(.glassProminent)
                 .controlSize(.large)
-                .disabled(controller.playingApps.isEmpty)
+                .fixedSize()
+            } else {
+                Button("Send to TV", systemImage: "play.rectangle.on.rectangle.fill", action: controller.mirrorPlayingMedia)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .disabled(controller.playingApps.isEmpty)
+            }
         }
         .padding(16)
         .glassEffect(.regular, in: .rect(cornerRadius: 20))

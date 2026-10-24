@@ -56,7 +56,8 @@ final class CastController: ObservableObject {
     init() {
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
         try? server.start()
-        mirror.onStopped = { [weak self] _ in Task { @MainActor in self?.stop() } }
+        mirror.onStopped = { [weak self] error in Task { @MainActor in self?.mirrorStopped(error) } }
+        trackRecentApps()
         tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
         tabServer.start()
         Extension.install()
@@ -192,14 +193,33 @@ final class CastController: ObservableObject {
         run("Starting mirroring") { [self] in try await mirrorCast(target) }
     }
 
-    func refreshPlaying() {
-        playingApps = MediaDetector.appsPlayingAudio()
+    // Most recently used apps first, so Send to TV picks the browser you were just watching.
+    private var recentApps: [pid_t] = []
+    private var activationObserver: NSObjectProtocol?
+
+    private func trackRecentApps() {
+        activationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
+        ) { [weak self] note in
+            guard let pid = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.processIdentifier else { return }
+            MainActor.assumeIsolated {
+                self?.recentApps.removeAll { $0 == pid }
+                self?.recentApps.insert(pid, at: 0)
+            }
+        }
     }
 
-    func mirrorPlayingMedia() {
+    func refreshPlaying() {
+        let rank = { (pid: pid_t) in self.recentApps.firstIndex(of: pid) ?? Int.max }
+        playingApps = MediaDetector.appsPlayingAudio().sorted { rank($0.pid) < rank($1.pid) }
+    }
+
+    func mirrorPlayingMedia() { sendToTV(nil) }
+
+    func sendToTV(_ chosen: PlayingApp?) {
         run("Finding what's playing") { [self] in
             refreshPlaying()
-            guard let app = playingApps.first else {
+            guard let app = chosen ?? playingApps.first else {
                 throw Tools.Failure(message: "Nothing is playing sound right now. Start the video, then try again.")
             }
             if WindowMover.isAllowed {
@@ -227,11 +247,14 @@ final class CastController: ObservableObject {
     }
 
     private func sendToTVScreen(_ app: PlayingApp) async throws {
-        try await showTVScreen()
-        guard let bounds = tvScreen.bounds, WindowMover.moveFrontWindow(of: app.pid, to: bounds) else {
-            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, to the right of your display.")
+        _ = try await tvScreen.turnOn()
+        tvScreenOn = true
+        guard let bounds = tvScreen.bounds, await WindowMover.moveFrontWindow(of: app.pid, to: bounds) else {
+            try await showTVScreen()
+            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
         }
         Log.write("moved \(app.name) onto the tv screen")
+        try await showTVScreen()
     }
 
     private func mirrorWindow(of app: PlayingApp) async throws {
@@ -277,6 +300,22 @@ final class CastController: ObservableObject {
         let filter = try await ScreenMirror.pickWithSystemPicker()
         try await mirror.start(filter: filter, settings: mirrorSettings)
         try await castMirror(title: "Screen mirroring")
+    }
+
+    // Display changes (like the macOS "show on AnyCast TV" prompt) can stop capture; the TV screen just restarts it.
+    private func mirrorStopped(_ error: Error?) {
+        Log.write("capture stopped: \(error?.localizedDescription ?? "no error")")
+        guard plan?.mode == .mirror else { return }
+        guard tvScreenOn, let id = tvScreen.displayID else { return stop() }
+        Task {
+            try? await Task.sleep(for: .seconds(1))
+            do {
+                try await mirror.start(MirrorTarget(kind: .display(id), title: "TV screen"), settings: mirrorSettings)
+                Log.write("capture restarted on tv screen")
+            } catch {
+                stop()
+            }
+        }
     }
 
     private func castTabStream(_ session: TabSession) {

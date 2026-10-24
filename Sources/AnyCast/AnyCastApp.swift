@@ -58,7 +58,13 @@ struct MenuBarContent: View {
 
     var body: some View {
         Button("Cast front browser tab", action: controller.castCurrentTab)
-        Button("Send playing video to TV", action: controller.mirrorPlayingMedia)
+        Menu("Send playing video to TV") {
+            ForEach(controller.playingApps, id: \.pid) { app in
+                Button(app.name) { controller.sendToTV(app) }
+            }
+            if controller.playingApps.isEmpty { Text("Nothing is playing") }
+        }
+        .onAppear(perform: controller.refreshPlaying)
         Button(controller.tvScreenOn ? "Turn off TV screen" : "Turn on TV screen") {
             controller.tvScreenOn ? controller.stopTVScreen() : controller.startTVScreen()
         }
