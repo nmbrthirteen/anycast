@@ -8,17 +8,17 @@ final class Power {
     private var sleepDisabled = false
 
     init() {
-        if UserDefaults.standard.bool(forKey: Pref.sleepDisabledByAnyCast) { Self.pmset(disable: false) }
+        if UserDefaults.standard.bool(forKey: Pref.sleepDisabledByAnyCast) { Task { await Self.pmset(disable: false) } }
     }
 
-    func keepAwake(lidClosed: Bool) {
+    func keepAwake(lidClosed: Bool) async {
         if assertion == 0 {
             IOPMAssertionCreateWithName(kIOPMAssertionTypePreventSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "AnyCast is streaming to your TV" as CFString, &assertion)
         }
         guard lidClosed, !sleepDisabled else { return }
-        if !Self.pmset(disable: true) {
+        if await !Self.pmset(disable: true) {
             installRule()
-            guard Self.pmset(disable: true) else { return }
+            guard await Self.pmset(disable: true) else { return }
         }
         sleepDisabled = true
         UserDefaults.standard.set(true, forKey: Pref.sleepDisabledByAnyCast)
@@ -31,7 +31,7 @@ final class Power {
             assertion = 0
         }
         guard sleepDisabled else { return }
-        Self.pmset(disable: false)
+        Task { await Self.pmset(disable: false) }
         sleepDisabled = false
         UserDefaults.standard.set(false, forKey: Pref.sleepDisabledByAnyCast)
     }
@@ -48,14 +48,16 @@ final class Power {
     }
 
     @discardableResult
-    private static func pmset(disable: Bool) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        process.arguments = ["-n", "/usr/bin/pmset", "-a", "disablesleep", disable ? "1" : "0"]
-        process.standardError = FileHandle.nullDevice
-        guard (try? process.run()) != nil else { return false }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+    private nonisolated static func pmset(disable: Bool) async -> Bool {
+        await Task.detached {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+            process.arguments = ["-n", "/usr/bin/pmset", "-a", "disablesleep", disable ? "1" : "0"]
+            process.standardError = FileHandle.nullDevice
+            guard (try? process.run()) != nil else { return false }
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        }.value
     }
 
     private static var watching = false

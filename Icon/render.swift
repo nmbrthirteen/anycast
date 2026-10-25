@@ -12,5 +12,5 @@ func render(_ symbol: String, pointSize: CGFloat, offset: CGPoint, to path: Stri
     NSGraphicsContext.restoreGraphicsState()
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
 }
-render("tv", pointSize: 430, offset: CGPoint(x: 0, y: -12), to: CommandLine.arguments[1])
-render("play.fill", pointSize: 140, offset: CGPoint(x: 12, y: 40), to: CommandLine.arguments[2])
+render("tv.fill", pointSize: 430, offset: CGPoint(x: 0, y: -12), to: CommandLine.arguments[1])
+render("play.fill", pointSize: 180, offset: CGPoint(x: 14, y: 40), to: CommandLine.arguments[2])

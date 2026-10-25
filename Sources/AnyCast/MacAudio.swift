@@ -1,5 +1,6 @@
 import Foundation
 
+@MainActor
 enum MacAudio {
     private static var mutedByUs = false
 

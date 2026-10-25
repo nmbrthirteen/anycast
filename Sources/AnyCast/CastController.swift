@@ -274,7 +274,7 @@ final class CastController: ObservableObject {
             item = MediaItem(url: served, title: plan.title, mime: "video/mpeg", kind: .video, isLive: true)
         }
 
-        if case .remote = plan.source { power.allowSleep() } else { power.keepAwake(lidClosed: lidClosed) }
+        if case .remote = plan.source { power.allowSleep() } else { await power.keepAwake(lidClosed: lidClosed) }
 
         working = "Starting on \(renderer.name)"
         Log.write("cast \(plan.title) mode=\(plan.mode) url=\(item.url.absoluteString.prefix(120)) start=\(plan.startAt)")

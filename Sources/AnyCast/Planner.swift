@@ -220,7 +220,10 @@ enum Planner {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
               let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
         else { throw Tools.Failure(message: "Could not read image") }
-        let output = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".jpg")
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-images")
+        try? FileManager.default.removeItem(at: folder)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let output = folder.appendingPathComponent(UUID().uuidString + ".jpg")
         guard let destination = CGImageDestinationCreateWithURL(output as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else {
             throw Tools.Failure(message: "Could not convert image")
         }

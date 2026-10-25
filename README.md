@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/icon.png" width="128" alt="AnyCast icon"></p>
+
 # AnyCast
 
 Free, open-source casting from your Mac to almost any smart TV. Send a browser tab, a video link, a file, or a single app window to the TV, with sound, the way AirPlay works for Apple TV.

@@ -28,10 +28,10 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var audio: [Float] = []
     private var streamClock = StreamClock()
     var speed: Double {
-        get { streamClock.speed }
-        set { streamClock.speed = newValue }
+        get { lock.withLock { streamClock }.speed }
+        set { lock.withLock { streamClock }.speed = newValue }
     }
-    var streamSeconds: Double { streamClock.now() }
+    var streamSeconds: Double { lock.withLock { streamClock }.now() }
     private var stats = (frames: 0, newFrames: 0, padded: 0, dropped: 0, captured: 0, received: 0, consumed: 0)
 
     func takeStats() -> String {
@@ -139,8 +139,8 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let size = CGSize(width: points.width * CGFloat(filter.pointPixelScale), height: points.height * CGFloat(filter.pointPixelScale))
 
         let fit = min(1, Double(settings.maxHeight) / size.height, Double(settings.maxHeight) * 16 / 9 / size.width)
-        width = Int(size.width * fit) & ~1
-        height = Int(size.height * fit) & ~1
+        let (width, height) = (Int(size.width * fit) & ~1, Int(size.height * fit) & ~1)
+        lock.withLock { (self.width, self.height) = (width, height) }
 
         let config = SCStreamConfiguration()
         config.width = width
@@ -175,9 +175,13 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     func makeProducer() -> StreamProducer { MirrorEncoder(mirror: self) }
 
+    // Runs on a capture queue. Errors from a stream that was already replaced are ignored.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        self.stream = nil
-        onStopped?(error)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.stream === stream else { return }
+            self.stream = nil
+            self.onStopped?(error)
+        }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
@@ -199,7 +203,7 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         defer { CVPixelBufferUnlockBaseAddress(pixels, .readOnly) }
         let w = CVPixelBufferGetWidth(pixels)
         let h = CVPixelBufferGetHeight(pixels)
-        guard w == width, h == height else { return }
+        guard lock.withLock({ w == width && h == height }) else { return }
 
         var frame = Data(capacity: w * h * 3 / 2)
         for (plane, rows) in [(0, h), (1, h / 2)] {
@@ -255,8 +259,10 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     }
 
     fileprivate func markEncoderStart(_ date: Date) -> StreamClock {
-        streamClock = StreamClock()
-        return streamClock
+        lock.withLock {
+            streamClock = StreamClock()
+            return streamClock
+        }
     }
 
     fileprivate func takeAudio(frames: Int) -> [Float] {

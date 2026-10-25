@@ -249,12 +249,30 @@ private final class ChunkQueue: @unchecked Sendable {
     private(set) var bytes = 0
     private let limit = 64 << 20
 
+    // When the TV falls far behind, the oldest video is dropped so it catches up to live.
+    // The skipped amount stays a multiple of 188 bytes so the TV stays aligned to MPEG-TS packets.
     func push(_ chunk: Data) -> Bool {
         condition.lock()
         defer { condition.unlock() }
-        guard !finished, bytes < limit else { return false }
+        guard !finished else { return false }
         chunks.append(chunk)
         bytes += chunk.count
+        if bytes > limit {
+            var dropped = 0
+            while bytes > limit / 2, chunks.count > 1 {
+                dropped += chunks[0].count
+                bytes -= chunks.removeFirst().count
+            }
+            var extra = (188 - dropped % 188) % 188
+            while extra > 0, !chunks.isEmpty {
+                let cut = min(extra, chunks[0].count)
+                chunks[0].removeFirst(cut)
+                bytes -= cut
+                extra -= cut
+                if chunks[0].isEmpty { chunks.removeFirst() }
+            }
+            Log.write("stream: tv fell behind, skipped \(dropped / 1024) KB to catch up")
+        }
         condition.signal()
         return true
     }
