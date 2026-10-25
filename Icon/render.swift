@@ -13,4 +13,4 @@ func render(_ symbol: String, pointSize: CGFloat, offset: CGPoint, to path: Stri
     try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: path))
 }
 render("tv.fill", pointSize: 430, offset: CGPoint(x: 0, y: -12), to: CommandLine.arguments[1])
-render("play.fill", pointSize: 180, offset: CGPoint(x: 14, y: 40), to: CommandLine.arguments[2])
+render("play.fill", pointSize: 180, offset: CGPoint(x: 1, y: 25), to: CommandLine.arguments[2])
