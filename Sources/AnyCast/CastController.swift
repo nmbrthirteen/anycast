@@ -18,6 +18,7 @@ final class CastController: ObservableObject {
     @Published var thumbnails: [MirrorTarget.ID: NSImage] = [:]
     @Published var browsers: [Browser] = []
     @Published var playingApps: [PlayingApp] = []
+    @Published var otherApps: [PlayingApp] = []
     @Published var tvScreenOn = false
     @Published var loadingTabs = false
     @Published var recentFiles: [URL] = (UserDefaults.standard.stringArray(forKey: "recentFiles") ?? []).map { URL(fileURLWithPath: $0) }
@@ -38,6 +39,7 @@ final class CastController: ObservableObject {
     let browser = BrowserWatcher()
     let tvScreen = TVScreen()
     let recentApps = RecentApps()
+    let media = MediaDetector()
     var sentApp: PlayingApp?
     var restoreTask: Task<Void, Never>?
     var handledLaunchArguments = false
@@ -71,6 +73,12 @@ final class CastController: ObservableObject {
         tabServer.start()
         Extension.install()
         scan()
+        Task { [weak self] in
+            while let self {
+                refreshPlaying()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     func scan() {
@@ -89,7 +97,11 @@ final class CastController: ObservableObject {
                 return scan()
             }
             emptyScans = 0
-            if renderers.isEmpty { message = "No TV found. Check the TV is on and on the same Wi-Fi, then scan again." }
+            if renderers.isEmpty {
+                message = await TVDiscovery.knownTVIsStuck()
+                    ? "No TV found. Your TV is on the network but stopped accepting casts. Unplug it for 10 seconds, then scan again."
+                    : "No TV found. Check the TV is on and on the same Wi-Fi, then scan again."
+            }
             else if message?.hasPrefix("No TV") == true { message = nil }
             Log.write("scan found \(renderers.map { "\($0.name) \($0.id)" })")
             if let client { volume = Double((try? await client.volume()) ?? 0) }

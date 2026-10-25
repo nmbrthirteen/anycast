@@ -63,8 +63,15 @@ struct MenuBarContent: View {
                 Button(app.name) { controller.sendToTV(app) }
             }
             if controller.playingApps.isEmpty { Text("Nothing is playing") }
+            if !controller.otherApps.isEmpty {
+                Divider()
+                Section("Other apps") {
+                    ForEach(controller.otherApps, id: \.pid) { app in
+                        Button(app.name) { controller.sendToTV(app) }
+                    }
+                }
+            }
         }
-        .onAppear(perform: controller.refreshPlaying)
         Button(controller.tvScreenOn ? "Turn off TV screen" : "Turn on TV screen") {
             controller.tvScreenOn ? controller.stop() : controller.startTVScreen()
         }

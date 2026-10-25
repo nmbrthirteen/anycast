@@ -1,27 +1,52 @@
 import AppKit
 import CoreAudio
 
-struct PlayingApp {
+struct PlayingApp: Equatable {
     let name: String
     let bundleID: String
     let pid: pid_t
 }
 
-enum MediaDetector {
-    // Browsers play sound from helper processes (com.google.Chrome.helper), so match them back to the parent app by bundle ID prefix.
-    static func appsPlayingAudio() -> [PlayingApp] {
-        let ownBundle = Bundle.main.bundleIdentifier ?? ""
-        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }
-        var result: [PlayingApp] = []
-        for process in audioProcesses() where process.isPlaying {
-            guard let app = apps.first(where: { app in
-                guard let id = app.bundleIdentifier else { return false }
-                return app.processIdentifier == process.pid || process.bundleID == id || process.bundleID.hasPrefix(id + ".")
-            }), let id = app.bundleIdentifier, id != ownBundle, !result.contains(where: { $0.bundleID == id })
-            else { continue }
-            result.append(PlayingApp(name: app.localizedName ?? id, bundleID: id, pid: app.processIdentifier))
+@_silgen_name("responsibility_get_pid_responsible_for_pid")
+private func responsiblePID(_ pid: pid_t) -> pid_t
+
+@MainActor
+final class MediaDetector {
+    private static let videoPlayers: Set<String> = [
+        "com.colliderli.iina", "org.videolan.vlc", "com.apple.QuickTimePlayerX", "io.mpv",
+        "com.firecore.infuse", "com.apple.TV", "tv.plex.desktop", "com.netflix.Netflix",
+    ]
+    // Paused videos and ad gaps stop the audio stream, so an app counts as playing for a while after its last sound.
+    private static let grace: TimeInterval = 180
+    private var lastHeard: [pid_t: Date] = [:]
+
+    func scan() -> (playing: [PlayingApp], others: [PlayingApp]) {
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let apps = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.processIdentifier != ownPID }
+        let now = Date()
+        for process in Self.audioProcesses() where process.isPlaying {
+            if let app = Self.owner(of: process, in: apps) { lastHeard[app.processIdentifier] = now }
         }
-        return result
+        lastHeard = lastHeard.filter { pid, date in now.timeIntervalSince(date) < Self.grace && apps.contains { $0.processIdentifier == pid } }
+
+        let playing = apps.filter { lastHeard[$0.processIdentifier] != nil }
+        let others = apps.filter { app in
+            guard let id = app.bundleIdentifier, lastHeard[app.processIdentifier] == nil else { return false }
+            return Self.videoPlayers.contains(id) || BrowserWatcher.name(forBundleID: id) != nil
+        }
+        return (playing.compactMap(Self.playingApp), others.compactMap(Self.playingApp))
+    }
+
+    private static func playingApp(_ app: NSRunningApplication) -> PlayingApp? {
+        guard let id = app.bundleIdentifier else { return nil }
+        return PlayingApp(name: app.localizedName ?? id, bundleID: id, pid: app.processIdentifier)
+    }
+
+    // Browsers and WebKit apps play sound from helper processes, which macOS attributes to the app that launched them.
+    private static func owner(of process: AudioProcess, in apps: [NSRunningApplication]) -> NSRunningApplication? {
+        let responsible = responsiblePID(process.pid)
+        return apps.first { $0.processIdentifier == process.pid || $0.processIdentifier == responsible }
+            ?? apps.first { app in app.bundleIdentifier.map { process.bundleID.hasPrefix($0 + ".") } ?? false }
     }
 
     private struct AudioProcess {

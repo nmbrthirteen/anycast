@@ -17,14 +17,21 @@ extension CastController {
     }
 
     func refreshPlaying() {
-        playingApps = MediaDetector.appsPlayingAudio().sorted { recentApps.rank($0.pid) < recentApps.rank($1.pid) }
+        let found = media.scan()
+        let byRecent = { (a: PlayingApp, b: PlayingApp) in self.recentApps.rank(a.pid) < self.recentApps.rank(b.pid) }
+        let playing = found.playing.sorted(by: byRecent), others = found.others.sorted(by: byRecent)
+        if playing != playingApps {
+            Log.write("playing apps: \(playing.map(\.name))")
+            playingApps = playing
+        }
+        if others != otherApps { otherApps = others }
     }
 
     func sendToTV(_ chosen: PlayingApp?) {
         run("Finding what's playing") { [self] in
             refreshPlaying()
             guard let app = chosen ?? playingApps.first else {
-                throw Tools.Failure(message: "Nothing is playing sound right now. Start the video, then try again.")
+                throw Tools.Failure(message: "Nothing has played sound in the last few minutes. Start the video, or pick the app from the menu.")
             }
             if WindowMover.isAllowed {
                 try await sendToTVScreen(app)
