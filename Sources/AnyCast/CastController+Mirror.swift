@@ -151,6 +151,9 @@ extension CastController {
         Log.write("moved \(app.name) onto the tv screen")
         sentApp = app
         try await showTVScreen()
+        if BrowserWatcher.name(forBundleID: app.bundleID) != nil, let id = tvScreen.displayID {
+            await VideoFullscreen.restore(on: id)
+        }
     }
 
     private func mirrorCast(_ target: MirrorTarget) async throws {

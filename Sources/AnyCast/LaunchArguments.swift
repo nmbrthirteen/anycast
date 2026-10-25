@@ -12,7 +12,7 @@ extension CastController {
             target.hasPrefix("http") ? castLink(target) : castFile(URL(fileURLWithPath: target))
         } else if let name = value(after: "--send") {
             refreshPlaying()
-            sendToTV(playingApps.first { $0.name == name })
+            sendToTV((playingApps + otherApps).first { $0.name == name })
         } else if args.contains("--tv-screen") {
             startTVScreen()
         } else if args.contains("--cast-tab") {

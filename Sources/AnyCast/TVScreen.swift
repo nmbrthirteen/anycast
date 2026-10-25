@@ -21,6 +21,7 @@ final class TVScreen {
             throw Tools.Failure(message: "macOS didn't switch on the TV screen. Try again, or restart your Mac if it keeps happening.")
         }
         Log.write("tv screen on as display \(display.displayID)")
+        Self.unmirror(display.displayID)
         keepExtended()
         return display.displayID
     }
@@ -30,19 +31,22 @@ final class TVScreen {
         extendTask?.cancel()
         extendTask = Task { [weak self] in
             while !Task.isCancelled, let id = self?.displayID {
-                if CGDisplayIsInMirrorSet(id) != 0 {
-                    var config: CGDisplayConfigRef?
-                    CGBeginDisplayConfiguration(&config)
-                    CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
-                    CGCompleteDisplayConfiguration(config, .forSession)
-                    Log.write("tv screen was mirrored, switched back to extended")
-                }
+                Self.unmirror(id)
                 try? await Task.sleep(for: .seconds(2))
             }
         }
     }
 
     private var extendTask: Task<Void, Never>?
+
+    private static func unmirror(_ id: CGDirectDisplayID) {
+        guard CGDisplayIsInMirrorSet(id) != 0 else { return }
+        var config: CGDisplayConfigRef?
+        CGBeginDisplayConfiguration(&config)
+        CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
+        CGCompleteDisplayConfiguration(config, .forSession)
+        Log.write("tv screen was mirrored, switched back to extended")
+    }
 
     func turnOff() {
         extendTask?.cancel()
