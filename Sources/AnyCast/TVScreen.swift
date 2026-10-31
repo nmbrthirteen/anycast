@@ -12,7 +12,7 @@ final class TVScreen {
         if let id = displayID { return id }
         let display = try AnyCastVirtualDisplay(name: "AnyCast TV", width: 1920, height: 1080, refreshRate: 60, productID: 0x7A01)
         self.display = display
-        for attempt in 0..<60 where !Self.isOnline(display.displayID) {
+        for attempt in 0..<120 where !Self.isOnline(display.displayID) {
             if attempt == 10 { _ = await DisplayPrompt.chooseExtended(for: display.displayID) }
             try await Task.sleep(for: .milliseconds(100))
         }

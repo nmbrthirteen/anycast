@@ -45,13 +45,15 @@ struct NowPlayingBar: View {
                     }
 
                     HStack(spacing: 8) {
-                        Button(action: controller.togglePause) {
-                            Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
+                        if controller.canPause {
+                            Button(action: controller.togglePause) {
+                                Image(systemName: controller.isPlaying ? "pause.fill" : "play.fill").frame(width: 22, height: 22)
+                            }
+                            .buttonStyle(.glassProminent)
+                            .buttonBorderShape(.circle)
+                            .controlSize(.large)
+                            .keyboardShortcut(.space, modifiers: [])
                         }
-                        .buttonStyle(.glassProminent)
-                        .buttonBorderShape(.circle)
-                        .controlSize(.large)
-                        .keyboardShortcut(.space, modifiers: [])
 
                         Button(action: controller.stop) { Image(systemName: "stop.fill").frame(width: 22, height: 22) }
                             .buttonStyle(.glass)

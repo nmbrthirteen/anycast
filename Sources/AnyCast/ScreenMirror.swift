@@ -164,6 +164,8 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         self.stream = stream
     }
 
+    var isCapturing: Bool { stream != nil }
+
     func stop() {
         stream?.stopCapture { _ in }
         stream = nil

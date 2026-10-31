@@ -136,7 +136,7 @@ extension CastController {
     private func showTVScreen() async throws {
         let id = try await tvScreen.turnOn()
         tvScreenOn = true
-        if plan?.mode == .mirror, mirror.displayID == id { return }
+        if mirror.isCapturing, mirror.displayID == id, plan == nil || plan?.mode == .mirror { return }
         try await mirror.start(tvScreenTarget(id), settings: mirrorSettings)
         try await castMirror(title: "TV screen")
     }

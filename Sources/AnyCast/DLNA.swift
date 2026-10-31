@@ -99,9 +99,9 @@ struct DLNAClient {
     func load(_ item: MediaItem) async throws {
         _ = try? await call(Self.transport, "Stop")
         do {
-            try await setURI(item, mime: item.mime)
+            try await setURIWhenAllowed(item, mime: item.mime)
         } catch is UPnPError where item.mime == "video/mpeg" {
-            try await setURI(item, mime: "video/mp2t")
+            try await setURIWhenAllowed(item, mime: "video/mp2t")
         }
         var lastError: Error?
         for _ in 0..<6 {
@@ -143,6 +143,18 @@ struct DLNAClient {
     func setVolume(_ volume: Int) async throws {
         guard renderer.renderingControl != nil else { return }
         try await call(Self.rendering, "SetVolume", [("Channel", "Master"), ("DesiredVolume", String(volume))])
+    }
+
+    // Right after waking up, the TV refuses new media with 606 for several seconds.
+    private func setURIWhenAllowed(_ item: MediaItem, mime: String) async throws {
+        for _ in 0..<10 {
+            do {
+                return try await setURI(item, mime: mime)
+            } catch let error as UPnPError where error.code == 606 {
+                try await Task.sleep(for: .milliseconds(1500))
+            }
+        }
+        try await setURI(item, mime: mime)
     }
 
     private func setURI(_ item: MediaItem, mime: String) async throws {

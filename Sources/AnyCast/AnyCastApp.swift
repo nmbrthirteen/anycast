@@ -78,7 +78,9 @@ struct MenuBarContent: View {
         Button("Mirror a window", action: controller.startMirrorWithPicker)
         if controller.plan != nil {
             Divider()
-            Button(controller.isPlaying ? "Pause" : "Play", action: controller.togglePause)
+            if controller.canPause {
+                Button(controller.isPlaying ? "Pause" : "Play", action: controller.togglePause)
+            }
             Button("Stop casting", action: controller.stop)
         }
         Divider()

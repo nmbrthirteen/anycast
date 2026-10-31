@@ -29,7 +29,8 @@ enum VideoFullscreen {
     }
 
     private static func fillsScreen(_ video: CGRect, _ screen: CGRect) -> Bool {
-        video.width >= screen.width * 0.9 || video.height >= screen.height * 0.9
+        let wide = video.width / screen.width, tall = video.height / screen.height
+        return (wide >= 0.9 && tall >= 0.5) || (tall >= 0.9 && wide >= 0.5)
     }
 
     // Diffs a few small screenshots and returns the bounds of the largest area that keeps changing.

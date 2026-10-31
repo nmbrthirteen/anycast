@@ -57,6 +57,7 @@ final class CastController: ObservableObject {
     var renderer: Renderer? { renderers.first { $0.id == selectedID } ?? renderers.first }
     var isPlaying: Bool { tvState == "PLAYING" || tvState == "TRANSITIONING" }
     var canSeek: Bool { plan.map { $0.duration > 0 && $0.kind != .image } ?? false }
+    var canPause: Bool { plan.map { $0.mode != .mirror && $0.mode != .tab } ?? false }
     private var client: DLNAClient? { renderer.map(DLNAClient.init) }
     private var profile: TVProfile { TVProfile(maxHeight: maxHeight, playsHEVC: playsHEVC) }
 
@@ -174,11 +175,11 @@ final class CastController: ObservableObject {
     var currentTime: Double { (plan?.seeksByRestart == true ? offset : 0) + position }
 
     func togglePause() {
-        guard let client else { return }
+        guard canPause, let client else { return }
         let playing = isPlaying
         tvState = playing ? "PAUSED_PLAYBACK" : "PLAYING"
         Task {
-            do { playing ? try await client.pause() : try await client.play() } catch { message = error.localizedDescription }
+            do { playing ? try await client.pause() : try await client.play() } catch { transportFailed(error) }
         }
     }
 
@@ -190,8 +191,18 @@ final class CastController: ObservableObject {
             run("Jumping to \(DLNAClient.format(seconds))") { [self] in try await cast(restarted) }
         } else {
             position = seconds
-            Task { do { try await client.seek(to: seconds) } catch { message = error.localizedDescription } }
+            Task { do { try await client.seek(to: seconds) } catch { transportFailed(error) } }
         }
+    }
+
+    private func transportFailed(_ error: Error) {
+        Log.write("transport error: \(error.localizedDescription)")
+        guard (error as? UPnPError)?.code == 716, var plan else {
+            message = error.localizedDescription
+            return
+        }
+        plan.startAt = currentTime
+        run("Reconnecting to the TV") { [self] in try await cast(plan) }
     }
 
     func setVolume(_ value: Double) {
