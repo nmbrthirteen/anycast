@@ -160,7 +160,9 @@ final class MediaServer: @unchecked Sendable {
         lock.unlock()
         previous?.stop()
 
-        guard let output = try? producer.start() else {
+        let output: FileHandle
+        do { output = try producer.start() } catch {
+            Log.write("stream failed to start: \(error.localizedDescription)")
             return send(connection, status: "500 Internal Server Error", headers: ["Content-Length": "0"], thenClose: true)
         }
         send(connection, status: "200 OK", headers: headers, thenClose: false)

@@ -164,8 +164,6 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         self.stream = stream
     }
 
-    var isCapturing: Bool { stream != nil }
-
     func stop() {
         stream?.stopCapture { _ in }
         stream = nil
@@ -354,7 +352,8 @@ private final class MirrorEncoder: StreamProducer {
             "-g", String(s.fps),
             "-c:a", "aac", "-b:a", "256k",
             // Constant mux rate pads still screens with null packets so the TV's byte-sized buffer fills in under a second.
-            "-f", "mpegts", "-muxrate", String(bitrate * 3 / 2 + 512_000), "-pcr_period", "20",
+            // It only needs to cover the encoder's peak rate, since every padded bit is Wi-Fi traffic.
+            "-f", "mpegts", "-muxrate", String(bitrate * 4 / 3 + 512_000), "-pcr_period", "20",
             "-flush_packets", "1", "-muxdelay", "0", "-muxpreload", "0", "pipe:1",
         ])
     }

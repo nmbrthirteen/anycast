@@ -6,7 +6,9 @@ import ScreenCaptureKit
 enum VideoFullscreen {
     private static let gridWidth = 160, gridHeight = 90
 
-    static func restore(on displayID: CGDirectDisplayID) async {
+    // Clicks and keys go to whatever app is in front, so each step first checks the user hasn't switched away.
+    // F toggles full screen on most players, so it's only pressed when the video is clearly still small.
+    static func restore(on displayID: CGDirectDisplayID, in pid: pid_t) async {
         let screen = CGDisplayBounds(displayID)
         guard let video = await movingRegion(on: displayID, in: screen) else {
             return Log.write("video full screen: no playing video found")
@@ -14,18 +16,26 @@ enum VideoFullscreen {
         Log.write("video full screen: video at \(video) on \(screen)")
         if fillsScreen(video, screen) { return Log.write("video full screen: already full screen") }
 
+        guard !Task.isCancelled, isFrontmost(pid) else { return Log.write("video full screen: skipped, another app is in front") }
         doubleClick(at: CGPoint(x: video.midX, y: video.midY))
-        if await isFullScreen(on: displayID, in: screen) { return Log.write("video full screen: restored with double-click") }
+        guard let after = await regionAfterInput(on: displayID, in: screen) else { return }
+        if fillsScreen(after, screen) { return Log.write("video full screen: restored with double-click") }
+
+        guard !Task.isCancelled, isFrontmost(pid) else { return Log.write("video full screen: skipped F, another app is in front") }
         pressF()
-        let done = await isFullScreen(on: displayID, in: screen)
+        let done = await regionAfterInput(on: displayID, in: screen).map { fillsScreen($0, screen) } ?? false
         Log.write("video full screen: \(done ? "restored with F" : "page didn't respond")")
     }
 
-    private static func isFullScreen(on displayID: CGDirectDisplayID, in screen: CGRect) async -> Bool {
+    private static func isFrontmost(_ pid: pid_t) -> Bool {
+        NSWorkspace.shared.frontmostApplication?.processIdentifier == pid
+    }
+
+    private static func regionAfterInput(on displayID: CGDirectDisplayID, in screen: CGRect) async -> CGRect? {
         try? await Task.sleep(for: .milliseconds(1200))
         let region = await movingRegion(on: displayID, in: screen)
         Log.write("video full screen: now \(region.map { "\($0)" } ?? "nothing moving")")
-        return region.map { fillsScreen($0, screen) } ?? false
+        return region
     }
 
     private static func fillsScreen(_ video: CGRect, _ screen: CGRect) -> Bool {
@@ -107,12 +117,13 @@ enum VideoFullscreen {
 
     private static func doubleClick(at point: CGPoint) {
         let original = CGEvent(source: nil)?.location
-        let source = CGEventSource(stateID: .hidSystemState)
+        let source = CGEventSource(stateID: .privateState)
         CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
         usleep(100_000)
         for click in 1...2 {
             for type in [CGEventType.leftMouseDown, .leftMouseUp] {
                 let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: .left)
+                event?.flags = []
                 event?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
                 event?.post(tap: .cghidEventTap)
             }
@@ -122,7 +133,11 @@ enum VideoFullscreen {
     }
 
     private static func pressF() {
-        let source = CGEventSource(stateID: .hidSystemState)
-        for down in [true, false] { CGEvent(keyboardEventSource: source, virtualKey: 3, keyDown: down)?.post(tap: .cghidEventTap) }
+        let source = CGEventSource(stateID: .privateState)
+        for down in [true, false] {
+            let event = CGEvent(keyboardEventSource: source, virtualKey: 3, keyDown: down)
+            event?.flags = []
+            event?.post(tap: .cghidEventTap)
+        }
     }
 }

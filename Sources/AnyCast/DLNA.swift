@@ -173,7 +173,8 @@ struct DLNAClient {
         <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">\
         <s:Body><u:\(action) xmlns:u="\(service)">\(args)</u:\(action)></s:Body></s:Envelope>
         """
-        var request = URLRequest(url: endpoint, timeoutInterval: 30)
+        // Status reads should fail fast when the TV is off; SetAVTransportURI can take long while the TV probes the stream.
+        var request = URLRequest(url: endpoint, timeoutInterval: action.hasPrefix("Get") ? 5 : 30)
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(service)#\(action)\"", forHTTPHeaderField: "SOAPACTION")

@@ -45,10 +45,14 @@ final class TabCastServer: @unchecked Sendable {
                 if metadata?.opcode == .text, session == nil {
                     let info = (try? JSONSerialization.jsonObject(with: data)) as? [String: String] ?? [:]
                     let started = TabSession(title: info["title"] ?? "Browser tab", mimeType: info["mimeType"] ?? "") { connection.cancel() }
-                    if (try? started.start()) != nil {
+                    do {
+                        try started.start()
                         session = started
                         Log.write("tab cast started: \(started.title) \(started.mimeType)")
                         self.onSession?(started)
+                    } catch {
+                        Log.write("tab cast failed to start: \(error.localizedDescription)")
+                        return connection.cancel()
                     }
                 } else if metadata?.opcode == .binary {
                     session?.write(data)

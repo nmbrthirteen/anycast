@@ -73,21 +73,38 @@ extension CastController {
 
     func mirrorWithPicker() async throws {
         let filter = try await ScreenMirror.pickWithSystemPicker()
+        try Task.checkCancellation()
         try await mirror.start(filter: filter, settings: mirrorSettings)
         try await castMirror(title: "Screen mirroring")
     }
 
-    // Display changes (like the macOS "show on AnyCast TV" prompt) can stop capture; the TV screen just restarts it.
+    // Display changes (like the macOS "show on AnyCast TV" prompt) can stop capture, and macOS sometimes removes the
+    // TV screen altogether. Capture restarts on the same screen, or on a new one when the old one is gone.
     func mirrorStopped(_ error: Error?) {
-        Log.write("capture stopped: \(error?.localizedDescription ?? "no error")")
+        Log.write("capture stopped: \(error?.localizedDescription ?? "no error") tv screen online=\(tvScreen.isOnline)")
         guard plan?.mode == .mirror else { return }
-        guard tvScreenOn, let id = tvScreen.displayID else { return stop() }
-        Task {
+        guard tvScreenOn, tvScreen.displayID != nil else { return stop() }
+        captureRestarts += 1
+        guard captureRestarts <= 3 else {
+            message = "macOS kept stopping the TV screen. Turn it on again."
+            return stop()
+        }
+        restartTask?.cancel()
+        restartTask = Task {
             try? await Task.sleep(for: .seconds(1))
+            guard !Task.isCancelled, plan?.mode == .mirror else { return }
             do {
-                try await mirror.start(tvScreenTarget(id), settings: mirrorSettings)
-                Log.write("capture restarted on tv screen")
+                if !tvScreen.isOnline {
+                    tvScreen.turnOff()
+                    _ = try await tvScreen.turnOn()
+                }
+                guard !Task.isCancelled, let id = tvScreen.displayID else { return }
+                try await mirror.start(tvScreenTarget(id), settings: mirror.settings)
+                Log.write("capture restarted on tv screen \(id)")
+                if let sentWindow, let bounds = tvScreen.bounds { await WindowMover.restore(sentWindow, on: bounds) }
             } catch {
+                guard !Task.isCancelled else { return }
+                message = error.localizedDescription
                 stop()
             }
         }
@@ -95,12 +112,12 @@ extension CastController {
 
     // Closing the lid turns off the built-in screen and macOS shuffles windows; put the video back once things settle.
     func screensChanged() {
-        guard tvScreenOn, let app = sentApp else { return }
+        guard tvScreenOn, let sentWindow else { return }
         restoreTask?.cancel()
         restoreTask = Task {
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, tvScreenOn, let bounds = tvScreen.bounds else { return }
-            await WindowMover.restore(app.pid, on: bounds)
+            guard !Task.isCancelled, tvScreenOn, tvScreen.isOnline, let bounds = tvScreen.bounds else { return }
+            await WindowMover.restore(sentWindow, on: bounds)
         }
     }
 
@@ -136,7 +153,8 @@ extension CastController {
     private func showTVScreen() async throws {
         let id = try await tvScreen.turnOn()
         tvScreenOn = true
-        if mirror.isCapturing, mirror.displayID == id, plan == nil || plan?.mode == .mirror { return }
+        if plan?.mode == .mirror, mirror.displayID == id { return }
+        try Task.checkCancellation()
         try await mirror.start(tvScreenTarget(id), settings: mirrorSettings)
         try await castMirror(title: "TV screen")
     }
@@ -144,21 +162,23 @@ extension CastController {
     private func sendToTVScreen(_ app: PlayingApp) async throws {
         _ = try await tvScreen.turnOn()
         tvScreenOn = true
-        guard let bounds = tvScreen.bounds, await WindowMover.moveFrontWindow(of: app.pid, to: bounds) else {
+        guard let bounds = tvScreen.bounds, let window = WindowMover.frontWindow(of: app.pid),
+              await WindowMover.move(window, of: app.pid, to: bounds) else {
             try await showTVScreen()
             throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
         }
         Log.write("moved \(app.name) onto the tv screen")
-        sentApp = app
+        sentWindow = SentWindow(pid: app.pid, element: window)
         try await showTVScreen()
         if BrowserWatcher.name(forBundleID: app.bundleID) != nil, let id = tvScreen.displayID {
-            await VideoFullscreen.restore(on: id)
+            await VideoFullscreen.restore(on: id, in: app.pid)
         }
     }
 
     private func mirrorCast(_ target: MirrorTarget) async throws {
         guard ScreenMirror.hasPermission else { return try await mirrorWithPicker() }
         do {
+            try Task.checkCancellation()
             try await mirror.start(target, settings: mirrorSettings)
         } catch let error as SCStreamError where error.code == .userDeclined {
             return try await mirrorWithPicker()

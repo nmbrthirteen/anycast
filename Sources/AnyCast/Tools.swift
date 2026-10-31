@@ -1,9 +1,9 @@
 import Foundation
 
 enum Tools {
-    static let ffmpeg = find("ffmpeg")
-    static let ffprobe = find("ffprobe")
-    static let ytdlp = find("yt-dlp")
+    static var ffmpeg: String? { find("ffmpeg") }
+    static var ffprobe: String? { find("ffprobe") }
+    static var ytdlp: String? { find("yt-dlp") }
 
     static func find(_ name: String) -> String? {
         ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", NSHomeDirectory() + "/.local/bin"]

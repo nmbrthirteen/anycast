@@ -26,7 +26,7 @@ final class CastController: ObservableObject {
     @AppStorage(Pref.maxHeight) var maxHeight = 1080
     @AppStorage(Pref.playsHEVC) var playsHEVC = false
     @AppStorage(Pref.mirrorFPS) var mirrorFPS = 30
-    @AppStorage(Pref.mirrorBitrate) var mirrorBitrate = 12
+    @AppStorage(Pref.mirrorBitrate) var mirrorBitrate = 8
     @AppStorage(Pref.mirrorCursor) var mirrorCursor = true
     @AppStorage(Pref.mirrorAudio) var mirrorAudio = true
     @AppStorage(Pref.lidClosed) var lidClosed = false
@@ -40,8 +40,10 @@ final class CastController: ObservableObject {
     let tvScreen = TVScreen()
     let recentApps = RecentApps()
     let media = MediaDetector()
-    var sentApp: PlayingApp?
+    var sentWindow: SentWindow?
     var restoreTask: Task<Void, Never>?
+    var restartTask: Task<Void, Never>?
+    var captureRestarts = 0
     var handledLaunchArguments = false
     private let server = MediaServer()
     private let power = Power()
@@ -52,6 +54,8 @@ final class CastController: ObservableObject {
     private var hasPlayed = false
     private var castStarted = Date()
     private var pollTask: Task<Void, Never>?
+    private var runTask: Task<Void, Never>?
+    private var seekTask: Task<Void, Never>?
     private var volumeTask: Task<Void, Never>?
 
     var renderer: Renderer? { renderers.first { $0.id == selectedID } ?? renderers.first }
@@ -73,6 +77,9 @@ final class CastController: ObservableObject {
         tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
         tabServer.start()
         Extension.install()
+        if Tools.ffmpeg == nil {
+            message = "AnyCast needs ffmpeg to stream from your Mac. Install it in Terminal with: brew install ffmpeg yt-dlp"
+        }
         scan()
         Task { [weak self] in
             while let self {
@@ -216,6 +223,8 @@ final class CastController: ObservableObject {
     }
 
     func stop() {
+        runTask?.cancel()
+        working = nil
         pollTask?.cancel()
         let client = client
         Task { try? await client?.stop() }
@@ -232,9 +241,12 @@ final class CastController: ObservableObject {
 
     private func endSession() {
         pollTask?.cancel()
+        seekTask?.cancel()
         tvScreen.turnOff()
         tvScreenOn = false
-        sentApp = nil
+        sentWindow = nil
+        restartTask?.cancel()
+        captureRestarts = 0
         MacAudio.restore()
         mirror.speed = 1
         server.clear()
@@ -252,19 +264,27 @@ final class CastController: ObservableObject {
         }
         working = status
         message = nil
-        Task {
+        runTask?.cancel()
+        runTask = Task {
             do { try await work() } catch {
+                guard !Task.isCancelled else { return }
                 Log.write("error: \(error.localizedDescription)")
                 message = error.localizedDescription
                 if plan == nil { endSession() }
             }
-            working = nil
+            if !Task.isCancelled { working = nil }
         }
     }
 
     func cast(_ plan: CastPlan) async throws {
         guard let renderer, let client else { return }
+        try Task.checkCancellation()
+        if Tools.ffmpeg == nil, plan.source.needsFFmpeg {
+            throw Tools.Failure(message: "AnyCast needs ffmpeg to stream from your Mac. Install it in Terminal with: brew install ffmpeg")
+        }
         pollTask?.cancel()
+        seekTask?.cancel()
+        restartTask?.cancel()
         server.clear()
         if case .mirror = plan.source {} else { mirror.stop() }
 
@@ -289,8 +309,15 @@ final class CastController: ObservableObject {
 
         working = "Starting on \(renderer.name)"
         Log.write("cast \(plan.title) mode=\(plan.mode) url=\(item.url.absoluteString.prefix(120)) start=\(plan.startAt)")
-        try await client.load(item)
+        do {
+            try await client.load(item)
+            try Task.checkCancellation()
+        } catch {
+            if !Task.isCancelled { endSession() }
+            throw error
+        }
         self.plan = plan
+        captureRestarts = 0
         duration = plan.duration
         position = 0
         hasPlayed = false
@@ -301,9 +328,11 @@ final class CastController: ObservableObject {
     }
 
     private func startSeekWhenReady(_ client: DLNAClient, to seconds: Double) {
-        Task {
+        seekTask?.cancel()
+        seekTask = Task {
             for _ in 0..<20 {
                 try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
                 if (try? await client.transportState()) == "PLAYING" {
                     try? await client.seek(to: seconds)
                     return
@@ -313,14 +342,29 @@ final class CastController: ObservableObject {
     }
 
     private func startPolling(_ client: DLNAClient) {
+        pollTask?.cancel()
         pollTask = Task {
+            var lastAnswer = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 guard !Task.isCancelled, plan != nil else { return }
-                guard let state = try? await client.transportState() else { continue }
+                guard let state = try? await client.transportState() else {
+                    guard !Task.isCancelled else { return }
+                    if Date().timeIntervalSince(lastAnswer) > 20 {
+                        Log.write("tv stopped answering")
+                        message = "Lost the connection to \(client.renderer.name). Check the TV is on, then cast again."
+                        endSession()
+                        return
+                    }
+                    continue
+                }
+                guard !Task.isCancelled else { return }
+                lastAnswer = Date()
                 if state != tvState { Log.write("tv state \(state) at \(Int(currentTime))s") }
                 tvState = state
-                if let info = try? await client.position() {
+                let info = try? await client.position()
+                guard !Task.isCancelled else { return }
+                if let info {
                     position = info.position
                     if plan?.mode == .mirror, info.position > 0 { tuneMirrorLatency(tvPosition: info.position) }
                     if duration == 0, info.duration > 0 { duration = info.duration }

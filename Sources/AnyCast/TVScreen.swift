@@ -14,7 +14,10 @@ final class TVScreen {
         self.display = display
         for attempt in 0..<120 where !Self.isOnline(display.displayID) {
             if attempt == 10 { _ = await DisplayPrompt.chooseExtended(for: display.displayID) }
-            try await Task.sleep(for: .milliseconds(100))
+            do { try await Task.sleep(for: .milliseconds(100)) } catch {
+                turnOff()
+                throw error
+            }
         }
         guard Self.isOnline(display.displayID) else {
             turnOff()
@@ -55,6 +58,7 @@ final class TVScreen {
     }
 
     var bounds: CGRect? { displayID.map(CGDisplayBounds) }
+    var isOnline: Bool { displayID.map(Self.isOnline) ?? false }
 
     private static func isOnline(_ id: CGDirectDisplayID) -> Bool {
         var count: UInt32 = 0
@@ -62,6 +66,11 @@ final class TVScreen {
         CGGetOnlineDisplayList(16, &ids, &count)
         return ids.prefix(Int(count)).contains(id)
     }
+}
+
+struct SentWindow {
+    let pid: pid_t
+    let element: AXUIElement
 }
 
 enum WindowMover {
@@ -74,13 +83,14 @@ enum WindowMover {
 
     // Full screen windows can't be moved, and macOS puts a window back where it was when full screen ends,
     // so every step waits until macOS reports it finished before the next one starts.
-    static func moveFrontWindow(of pid: pid_t, to bounds: CGRect) async -> Bool {
+    static func frontWindow(of pid: pid_t) -> AXUIElement? {
+        let window = frontWindow(of: AXUIElementCreateApplication(pid))
+        if window == nil { Log.write("move: no window found for pid \(pid)") }
+        return window
+    }
+
+    static func move(_ window: AXUIElement, of pid: pid_t, to bounds: CGRect) async -> Bool {
         NSRunningApplication(processIdentifier: pid)?.activate()
-        let app = AXUIElementCreateApplication(pid)
-        guard let window = frontWindow(of: app) else {
-            Log.write("move: no window found for pid \(pid)")
-            return false
-        }
         if bool(window, "AXFullScreen") {
             AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
             guard await waitUntil({ !bool(window, "AXFullScreen") }) else {
@@ -143,19 +153,12 @@ enum WindowMover {
         framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
     }
 
-    // Brings the app back on top. If its window left the TV screen (the lid closed and macOS rearranged things), it moves back.
-    static func restore(_ pid: pid_t, on bounds: CGRect) async {
-        NSRunningApplication(processIdentifier: pid)?.activate()
-        let app = AXUIElementCreateApplication(pid)
-        guard let window = frontWindow(of: app) else { return }
-        let onTV = framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
-        if onTV {
-            AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-            if !bool(window, "AXFullScreen") { AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanTrue) }
-        } else {
-            _ = await moveFrontWindow(of: pid, to: bounds)
-        }
-        Log.write("restored pid \(pid) on tv screen (was on tv: \(onTV))")
+    // Moves the sent window back if it left the TV screen (the lid closed and macOS rearranged things).
+    // A window still on the TV is left alone so the user's focus on the laptop isn't taken.
+    static func restore(_ sent: SentWindow, on bounds: CGRect) async {
+        guard framePosition(sent.element) != nil, !isInside(sent.element, bounds) else { return }
+        let moved = await move(sent.element, of: sent.pid, to: bounds)
+        Log.write("moved pid \(sent.pid) back onto the tv screen: \(moved)")
     }
 
     private static func frontWindow(of app: AXUIElement) -> AXUIElement? {

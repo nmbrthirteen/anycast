@@ -25,6 +25,13 @@ struct CastPlan {
         case file(URL, mime: String)
         case pipeline(mime: String, ext: String, arguments: (Double) -> [String])
         case mirror(make: () -> StreamProducer)
+
+        var needsFFmpeg: Bool {
+            switch self {
+            case .pipeline, .mirror: true
+            case .remote, .file: false
+            }
+        }
     }
 
     enum Mode: String {
@@ -86,6 +93,9 @@ enum Planner {
         }
 
         guard let probe else {
+            if Tools.ffprobe == nil {
+                throw Tools.Failure(message: "AnyCast needs ffmpeg to check this video. Install it in Terminal with: brew install ffmpeg")
+            }
             return CastPlan(title: title, kind: .video, duration: 0, mode: .original, source: .file(url, mime: mime))
         }
 

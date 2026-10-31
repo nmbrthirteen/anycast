@@ -123,7 +123,7 @@ private struct QualitySettings: View {
 
 private struct MirroringSettings: View {
     @AppStorage(Pref.mirrorFPS) private var fps = 30
-    @AppStorage(Pref.mirrorBitrate) private var bitrate = 12
+    @AppStorage(Pref.mirrorBitrate) private var bitrate = 8
     @AppStorage(Pref.mirrorCursor) private var cursor = true
     @AppStorage(Pref.mirrorAudio) private var audio = true
     @AppStorage(Pref.muteMac) private var muteMac = true
