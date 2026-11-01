@@ -6,9 +6,12 @@ enum Tools {
     static var ytdlp: String? { find("yt-dlp") }
 
     static func find(_ name: String) -> String? {
-        ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", NSHomeDirectory() + "/.local/bin"]
-            .map { "\($0)/\(name)" }
+        ([managedPath(name)] + ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin", "/usr/bin", NSHomeDirectory() + "/.local/bin"].map { "\($0)/\(name)" })
             .first { FileManager.default.isExecutableFile(atPath: $0) }
+    }
+
+    static func managedPath(_ name: String) -> String {
+        ToolInstaller.directory.appendingPathComponent(name == "yt-dlp" ? "yt-dlp/yt-dlp_macos" : name).path
     }
 
     struct Failure: LocalizedError {
@@ -17,7 +20,7 @@ enum Tools {
     }
 
     static func run(_ path: String?, _ arguments: [String]) async throws -> Data {
-        guard let path else { throw Failure(message: "Missing tool. Install with: brew install ffmpeg yt-dlp") }
+        guard let path else { throw Failure(message: "AnyCast is still downloading its video tools. Try again in a minute.") }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments

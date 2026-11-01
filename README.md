@@ -16,9 +16,10 @@ AnyCast talks to TVs over DLNA, the casting standard most Samsung, LG, Sony, His
 
 ## Install
 
-1. Install the tools AnyCast uses: `brew install ffmpeg yt-dlp`
-2. Download `AnyCast.dmg` from [Releases](../../releases) and drag AnyCast to Applications.
-3. Open it. Allow local network access when macOS asks, so it can find your TV.
+1. Download `AnyCast.dmg` from [Releases](../../releases) and drag AnyCast to Applications.
+2. Open it. Allow local network access when macOS asks, so it can find your TV.
+
+On first launch AnyCast downloads the video tools it uses (ffmpeg and yt-dlp, about 110 MB) and keeps yt-dlp up to date.
 
 Requires macOS 26 or later on an Apple silicon Mac.
 

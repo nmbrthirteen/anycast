@@ -77,8 +77,9 @@ final class CastController: ObservableObject {
         tabServer.onSession = { [weak self] session in Task { @MainActor in self?.castTabStream(session) } }
         tabServer.start()
         Extension.install()
-        if Tools.ffmpeg == nil {
-            message = "AnyCast needs ffmpeg to stream from your Mac. Install it in Terminal with: brew install ffmpeg yt-dlp"
+        Task {
+            do { try await ToolInstaller.shared.ensureInstalled() } catch { Log.write("tools: \(error.localizedDescription)") }
+            await ToolInstaller.shared.updateYtdlpIfDue()
         }
         scan()
         Task { [weak self] in
@@ -266,7 +267,14 @@ final class CastController: ObservableObject {
         message = nil
         runTask?.cancel()
         runTask = Task {
-            do { try await work() } catch {
+            do {
+                if !ToolInstaller.isComplete {
+                    working = "Downloading AnyCast's video tools. This happens once and takes a minute or two."
+                    try await ToolInstaller.shared.ensureInstalled()
+                    working = status
+                }
+                try await work()
+            } catch {
                 guard !Task.isCancelled else { return }
                 Log.write("error: \(error.localizedDescription)")
                 message = error.localizedDescription
@@ -280,7 +288,7 @@ final class CastController: ObservableObject {
         guard let renderer, let client else { return }
         try Task.checkCancellation()
         if Tools.ffmpeg == nil, plan.source.needsFFmpeg {
-            throw Tools.Failure(message: "AnyCast needs ffmpeg to stream from your Mac. Install it in Terminal with: brew install ffmpeg")
+            throw Tools.Failure(message: "AnyCast's video tools are missing. Check your internet connection, then try again.")
         }
         pollTask?.cancel()
         seekTask?.cancel()

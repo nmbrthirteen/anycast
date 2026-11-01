@@ -94,7 +94,7 @@ enum Planner {
 
         guard let probe else {
             if Tools.ffprobe == nil {
-                throw Tools.Failure(message: "AnyCast needs ffmpeg to check this video. Install it in Terminal with: brew install ffmpeg")
+                throw Tools.Failure(message: "AnyCast's video tools are missing. Check your internet connection, then try again.")
             }
             return CastPlan(title: title, kind: .video, duration: 0, mode: .original, source: .file(url, mime: mime))
         }

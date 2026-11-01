@@ -266,8 +266,8 @@ private struct AboutSettings: View {
             }
             UpdateSection()
             Section("Helpers") {
-                LabeledContent("ffmpeg", value: Tools.ffmpeg == nil ? "Missing: brew install ffmpeg" : "Installed")
-                LabeledContent("yt-dlp", value: Tools.ytdlp == nil ? "Missing: brew install yt-dlp" : "Installed")
+                LabeledContent("ffmpeg", value: Tools.ffmpeg == nil ? "Downloads automatically" : "Installed")
+                LabeledContent("yt-dlp", value: Tools.ytdlp == nil ? "Downloads automatically" : "Installed")
             }
             Section {
                 Button("Show log") {
