@@ -6,7 +6,7 @@ VERSION=${1:?usage: ./release.sh <version>}
 echo "$VERSION" > VERSION
 git add -A
 git commit -m "Release v$VERSION"
-./build.sh install
+./build.sh dmg
 rm -f build/AnyCast.zip
 ditto -c -k --keepParent build/AnyCast.app build/AnyCast.zip
 git tag "v$VERSION"

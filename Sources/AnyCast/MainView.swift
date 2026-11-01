@@ -80,7 +80,12 @@ struct MainView: View {
     private func page(@ViewBuilder _ content: () -> some View) -> some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .top) { StatusBanner() }
+            .overlay(alignment: .top) {
+                VStack(spacing: 0) {
+                    ToolsBanner()
+                    StatusBanner()
+                }
+            }
             .safeAreaInset(edge: .bottom) { NowPlayingBar() }
     }
 }

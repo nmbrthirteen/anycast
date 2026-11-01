@@ -265,10 +265,7 @@ private struct AboutSettings: View {
                 .padding(.vertical, 6)
             }
             UpdateSection()
-            Section("Helpers") {
-                LabeledContent("ffmpeg", value: Tools.ffmpeg == nil ? "Downloads automatically" : "Installed")
-                LabeledContent("yt-dlp", value: Tools.ytdlp == nil ? "Downloads automatically" : "Installed")
-            }
+            HelpersSection()
             Section {
                 Button("Show log") {
                     NSWorkspace.shared.activateFileViewerSelecting([FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/AnyCast.log")])
@@ -307,6 +304,26 @@ private struct UpdateSection: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct HelpersSection: View {
+    @ObservedObject private var tools = ToolStatus.shared
+
+    var body: some View {
+        Section {
+            LabeledContent("ffmpeg and yt-dlp") {
+                HStack {
+                    Text(tools.summary).foregroundStyle(.secondary)
+                    if case .failed = tools.state { Button("Try again", action: tools.retry) }
+                }
+            }
+        } header: {
+            Text("Video tools")
+        } footer: {
+            Text("AnyCast downloads these once, about 110 MB, and keeps yt-dlp up to date.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 }

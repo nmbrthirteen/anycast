@@ -24,11 +24,15 @@ if [[ "${1:-}" == "install" ]]; then
     pkill -x AnyCast || true
     rm -rf /Applications/AnyCast.app
     ditto "$APP" /Applications/AnyCast.app
+    echo "Installed /Applications/AnyCast.app"
+fi
+
+if [[ "${1:-}" == "install" || "${1:-}" == "dmg" ]]; then
     STAGE=$(mktemp -d)
     ditto "$APP" "$STAGE/AnyCast.app"
     ln -s /Applications "$STAGE/Applications"
     rm -f build/AnyCast.dmg
     hdiutil create -volname AnyCast -srcfolder "$STAGE" -format UDZO build/AnyCast.dmg >/dev/null 2>&1
     rm -rf "$STAGE"
-    echo "Installed /Applications/AnyCast.app and made $PWD/build/AnyCast.dmg"
+    echo "Made $PWD/build/AnyCast.dmg"
 fi

@@ -4,6 +4,37 @@ import Foundation
 // AnyCast downloads its own ffmpeg, ffprobe and yt-dlp so nobody needs Homebrew.
 // ffmpeg builds are pinned by checksum. yt-dlp follows its latest release, checked against the release's own checksums,
 // because sites change and old copies stop finding videos.
+@MainActor
+final class ToolStatus: ObservableObject {
+    static let shared = ToolStatus()
+
+    enum State: Equatable {
+        case ready
+        case downloading(step: String, done: Int64, total: Int64)
+        case failed(String)
+    }
+
+    @Published var state: State = ToolInstaller.isComplete ? .ready : .downloading(step: "Getting ready", done: 0, total: 0)
+
+    var summary: String {
+        switch state {
+        case .ready: "Installed"
+        case .failed: "Download failed"
+        case .downloading(_, let done, let total) where total > 0: "Downloading, \(Int(Double(done) / Double(total) * 100))%"
+        case .downloading: "Downloading"
+        }
+    }
+
+    // Background yt-dlp updates also report progress; those stay silent once the tools are ready.
+    func progress(_ next: State) {
+        if state != .ready { state = next }
+    }
+
+    func retry() {
+        Task { try? await ToolInstaller.shared.ensureInstalled() }
+    }
+}
+
 actor ToolInstaller {
     static let shared = ToolInstaller()
     static let directory = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/AnyCast/bin")
@@ -24,12 +55,25 @@ actor ToolInstaller {
     static var isComplete: Bool { Tools.ffmpeg != nil && Tools.ffprobe != nil && Tools.ytdlp != nil }
 
     func ensureInstalled() async throws {
-        if Self.isComplete { return }
+        if Self.isComplete {
+            await Self.report(.ready)
+            return
+        }
         if let installing { return try await installing.value }
         let task = Task { try await Self.installMissing() }
         installing = task
         defer { installing = nil }
-        try await task.value
+        do {
+            try await task.value
+            await Self.report(.ready)
+        } catch {
+            await Self.report(.failed(error.localizedDescription))
+            throw error
+        }
+    }
+
+    private static func report(_ state: ToolStatus.State) async {
+        await MainActor.run { ToolStatus.shared.state = state }
     }
 
     func updateYtdlpIfDue() async {
@@ -48,7 +92,7 @@ actor ToolInstaller {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         do {
             for build in ffmpegBuilds where Tools.find(build.name) == nil {
-                let zip = try await download(build.url)
+                let zip = try await download(build.url, step: "Downloading \(build.name)")
                 guard sha256(of: zip) == build.sha256 else { throw Tools.Failure(message: "\(build.name) download was damaged") }
                 try unzip(zip, to: directory.appendingPathComponent(build.name), keepFolder: false)
                 Log.write("installed \(build.name)")
@@ -68,17 +112,18 @@ actor ToolInstaller {
     private static func installYtdlp() async throws {
         let latest = try await latestYtdlpTag()
         if latest == UserDefaults.standard.string(forKey: ytdlpVersionKey), Tools.ytdlp != nil { return }
-        let sums = String(decoding: try Data(contentsOf: try await download("\(ytdlpRelease)/download/\(latest)/SHA2-256SUMS")), as: UTF8.self)
+        let sums = String(decoding: try Data(contentsOf: try await download("\(ytdlpRelease)/download/\(latest)/SHA2-256SUMS", step: nil)), as: UTF8.self)
         guard let expected = sums.split(separator: "\n").first(where: { $0.hasSuffix(" yt-dlp_macos.zip") })?.split(separator: " ").first else {
             throw Tools.Failure(message: "yt-dlp release has no checksum")
         }
-        let zip = try await download("\(ytdlpRelease)/download/\(latest)/yt-dlp_macos.zip")
+        let zip = try await download("\(ytdlpRelease)/download/\(latest)/yt-dlp_macos.zip", step: "Downloading yt-dlp")
         guard sha256(of: zip) == String(expected) else { throw Tools.Failure(message: "yt-dlp download was damaged") }
         let target = directory.appendingPathComponent("yt-dlp")
         try unzip(zip, to: target, keepFolder: true)
         UserDefaults.standard.set(latest, forKey: ytdlpVersionKey)
         Log.write("installed yt-dlp \(latest)")
         // macOS scans new code on first launch, which can take a minute; doing it now keeps the first cast fast.
+        await MainActor.run { ToolStatus.shared.progress(.downloading(step: "Checking yt-dlp", done: 0, total: 0)) }
         _ = try? await Tools.run(target.appendingPathComponent("yt-dlp_macos").path, ["--version"])
     }
 
@@ -92,10 +137,30 @@ actor ToolInstaller {
         return tag
     }
 
-    private static func download(_ url: String) async throws -> URL {
-        let (file, response) = try await URLSession.shared.download(for: URLRequest(url: URL(string: url)!, timeoutInterval: 60))
-        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-        return file
+    // A nil step downloads quietly. The file is moved out of URLSession's temporary spot before the handler returns.
+    private static func download(_ url: String, step: String?) async throws -> URL {
+        let saved = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-download-\(UUID().uuidString)")
+        var observation: NSKeyValueObservation?
+        defer { observation?.invalidate() }
+        return try await withCheckedThrowingContinuation { continuation in
+            let task = URLSession.shared.downloadTask(with: URLRequest(url: URL(string: url)!, timeoutInterval: 60)) { file, response, error in
+                if let error { return continuation.resume(throwing: error) }
+                guard let file, (response as? HTTPURLResponse)?.statusCode == 200 else { return continuation.resume(throwing: URLError(.badServerResponse)) }
+                do {
+                    try FileManager.default.moveItem(at: file, to: saved)
+                    continuation.resume(returning: saved)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+            if let step {
+                observation = task.progress.observe(\.completedUnitCount, options: [.initial]) { progress, _ in
+                    let state = ToolStatus.State.downloading(step: step, done: progress.completedUnitCount, total: max(progress.totalUnitCount, 0))
+                    Task { @MainActor in ToolStatus.shared.progress(state) }
+                }
+            }
+            task.resume()
+        }
     }
 
     private static func sha256(of file: URL) -> String {

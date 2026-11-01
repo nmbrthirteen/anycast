@@ -269,8 +269,11 @@ final class CastController: ObservableObject {
         runTask = Task {
             do {
                 if !ToolInstaller.isComplete {
-                    working = "Downloading AnyCast's video tools. This happens once and takes a minute or two."
-                    try await ToolInstaller.shared.ensureInstalled()
+                    working = "Waiting for the video tools to finish downloading"
+                    do { try await ToolInstaller.shared.ensureInstalled() } catch {
+                        working = nil
+                        return
+                    }
                     working = status
                 }
                 try await work()

@@ -119,12 +119,48 @@ struct StatusBanner: View {
     }
 }
 
+struct ToolsBanner: View {
+    @ObservedObject private var tools = ToolStatus.shared
+
+    var body: some View {
+        switch tools.state {
+        case .ready:
+            EmptyView()
+        case .downloading(let step, let done, let total):
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Setting up video tools, one time only").font(.callout.weight(.semibold))
+                if total > 0 {
+                    ProgressView(value: Double(done), total: Double(total))
+                    Text("\(step): \(Self.megabytes(done)) of \(Self.megabytes(total))")
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                    Text(step).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 360)
+            .banner(shape: .rect(cornerRadius: 18))
+        case .failed(let reason):
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.circle.fill").foregroundStyle(.orange)
+                Text(reason).lineLimit(3)
+                Button("Try again", action: tools.retry)
+            }
+            .banner()
+        }
+    }
+
+    private static func megabytes(_ bytes: Int64) -> String {
+        "\(bytes / 1_000_000) MB"
+    }
+}
+
 private extension View {
-    func banner() -> some View {
+    func banner(shape: some Shape = .capsule) -> some View {
         font(.callout)
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .glassEffect(.regular, in: .capsule)
+            .glassEffect(.regular, in: shape)
             .frame(maxWidth: 560)
             .padding(.top, 8)
             .padding(.horizontal, 16)
