@@ -40,7 +40,7 @@ struct TabRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Favicon(host: tab.url.host)
+            TabIcon()
             VStack(alignment: .leading, spacing: 2) {
                 Text(tab.title).lineLimit(1)
                 Text(tab.url.host?.replacingOccurrences(of: "www.", with: "") ?? "")
@@ -69,19 +69,13 @@ struct TabRow: View {
     }
 }
 
-struct Favicon: View {
-    let host: String?
-
+// A generic icon, since loading each site's favicon would contact every host you have open.
+struct TabIcon: View {
     var body: some View {
-        AsyncImage(url: host.flatMap { URL(string: "https://\($0)/favicon.ico") }) { phase in
-            if let image = phase.image {
-                image.resizable().interpolation(.high)
-            } else {
-                Image(systemName: "globe").foregroundStyle(.secondary)
-            }
-        }
-        .frame(width: 20, height: 20)
-        .padding(6)
-        .glassEffect(.regular, in: .rect(cornerRadius: 8))
+        Image(systemName: "globe")
+            .foregroundStyle(.secondary)
+            .frame(width: 20, height: 20)
+            .padding(6)
+            .glassEffect(.regular, in: .rect(cornerRadius: 8))
     }
 }

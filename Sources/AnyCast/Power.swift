@@ -4,21 +4,29 @@ import IOKit.pwr_mgt
 @MainActor
 final class Power {
     private static let rulePath = "/etc/sudoers.d/anycast-pmset"
-    private var assertion: IOPMAssertionID = 0
+    private var assertions: [IOPMAssertionID] = []
     private var sleepDisabled = false
 
     init() {
         if UserDefaults.standard.bool(forKey: Pref.sleepDisabledByAnyCast) { Task { await Self.pmset(disable: false) } }
     }
 
-    func keepAwake(lidClosed: Bool) async {
-        if assertion == 0 {
-            IOPMAssertionCreateWithName(kIOPMAssertionTypePreventSystemSleep as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "AnyCast is streaming to your TV" as CFString, &assertion)
+    // System sleep prevention only holds on AC power, so idle sleep is blocked too for casting on battery.
+    func keepAwake(lidClosed: Bool) async throws {
+        if assertions.isEmpty {
+            for type in [kIOPMAssertionTypePreventSystemSleep, kIOPMAssertionTypePreventUserIdleSystemSleep] {
+                var id: IOPMAssertionID = 0
+                if IOPMAssertionCreateWithName(type as CFString, IOPMAssertionLevel(kIOPMAssertionLevelOn), "AnyCast is streaming to your TV" as CFString, &id) == kIOReturnSuccess {
+                    assertions.append(id)
+                }
+            }
         }
         guard lidClosed, !sleepDisabled else { return }
         if await !Self.pmset(disable: true) {
-            installRule()
-            guard await Self.pmset(disable: true) else { return }
+            try await Self.installRule()
+            guard await Self.pmset(disable: true) else {
+                throw Tools.Failure(message: "AnyCast couldn't keep your Mac awake with the lid closed. Keep the lid open while casting.")
+            }
         }
         sleepDisabled = true
         UserDefaults.standard.set(true, forKey: Pref.sleepDisabledByAnyCast)
@@ -26,25 +34,50 @@ final class Power {
     }
 
     func allowSleep() {
-        if assertion != 0 {
-            IOPMAssertionRelease(assertion)
-            assertion = 0
-        }
+        assertions.forEach { IOPMAssertionRelease($0) }
+        assertions.removeAll()
         guard sleepDisabled else { return }
         Task { await Self.pmset(disable: false) }
         sleepDisabled = false
         UserDefaults.standard.set(false, forKey: Pref.sleepDisabledByAnyCast)
     }
 
+    // Turning the lid setting off takes the sudoers rule back out, after normal sleep is restored while the rule still works.
+    func removeRule() async throws {
+        if sleepDisabled {
+            await Self.pmset(disable: false)
+            sleepDisabled = false
+            UserDefaults.standard.set(false, forKey: Pref.sleepDisabledByAnyCast)
+        }
+        guard FileManager.default.fileExists(atPath: Self.rulePath) else { return }
+        try await Self.runAsAdmin("/bin/rm -f \(Self.rulePath)")
+    }
+
     // One admin prompt installs a rule that lets AnyCast toggle only this pmset setting without a password from then on.
-    private func installRule() {
-        let rule = "\(NSUserName()) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0"
-        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-pmset").path
-        try? (rule + "\n").write(toFile: temp, atomically: true, encoding: .utf8)
-        let shell = "/usr/sbin/visudo -cf '\(temp)' && /usr/bin/install -m 0440 -o root -g wheel '\(temp)' \(Self.rulePath)"
-        var error: NSDictionary?
-        NSAppleScript(source: "do shell script \"\(shell)\" with administrator privileges")?.executeAndReturnError(&error)
-        try? FileManager.default.removeItem(atPath: temp)
+    // The rule file is created by root inside the privileged script, so no other process can swap it before install.
+    private static func installRule() async throws {
+        let user = NSUserName()
+        guard !user.isEmpty, user.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._-".contains($0)) }) else {
+            throw Tools.Failure(message: "AnyCast can't add a sleep rule for the user name \"\(user)\". Keep the lid open while casting.")
+        }
+        let rule = "\(user) ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0"
+        try await runAsAdmin("""
+            f=$(/usr/bin/mktemp) || exit 1; \
+            printf '%s\\n' '\(rule)' > "$f" && /usr/sbin/visudo -cf "$f" && /usr/bin/install -m 0440 -o root -g wheel "$f" \(rulePath); \
+            s=$?; /bin/rm -f "$f"; exit $s
+            """)
+    }
+
+    private static func runAsAdmin(_ shell: String) async throws {
+        let quoted = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        do {
+            _ = try await Tools.run("/usr/bin/osascript", ["-e", "do shell script \"\(quoted)\" with administrator privileges"])
+        } catch let error as Tools.Failure where error.message.contains("-128") {
+            throw Tools.Failure(message: "AnyCast needs your password to keep your Mac awake with the lid closed. Keep the lid open, or try again.")
+        } catch {
+            Log.write("admin script failed: \(error.localizedDescription)")
+            throw Tools.Failure(message: "AnyCast couldn't change the sleep setting: \(error.localizedDescription)")
+        }
     }
 
     @discardableResult

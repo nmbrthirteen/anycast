@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         signal(SIGPIPE, SIG_IGN)
         Log.rotate()
+        #if DEBUG
         let args = CommandLine.arguments
         if let index = args.firstIndex(of: "--probe"), index + 2 < args.count {
             let (app, directory) = (args[index + 1], args[index + 2])
@@ -46,6 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await Snapshot.captureOwnWindows(to: directory)
             }
         }
+        #endif
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -111,6 +113,8 @@ struct OpenSettingsButton: View {
     }
 }
 
+#if DEBUG
 private extension Double {
     var nonZero: Double? { self == 0 ? nil : self }
 }
+#endif

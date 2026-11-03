@@ -22,6 +22,7 @@ final class Updater: ObservableObject {
         Task { await check(installAutomatically: autoUpdate) }
         timer = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             Task { @MainActor in
+                await ToolInstaller.shared.updateYtdlpIfDue()
                 guard let self, self.autoUpdate else { return }
                 await self.check(installAutomatically: true)
             }
@@ -68,15 +69,25 @@ final class Updater: ObservableObject {
         }
     }
 
+    // The copy lands next to the app first, so the swap is a same-volume rename that never leaves a half-written bundle.
     func install() {
         guard let staged else { return }
-        let target = Bundle.main.bundleURL.path
-        let script = "while kill -0 \(getpid()) 2>/dev/null; do sleep 0.5; done; rm -rf '\(target)' && /usr/bin/ditto '\(staged.path)' '\(target)' && open '\(target)'"
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = ["-c", script]
-        try? process.run()
-        Log.write("installing update over \(target)")
+        let target = Bundle.main.bundleURL
+        let sibling = target.deletingLastPathComponent().appendingPathComponent(".AnyCast-update-\(UUID().uuidString).app")
+        do {
+            try FileManager.default.copyItem(at: staged, to: sibling)
+            _ = try FileManager.default.replaceItemAt(target, withItemAt: sibling)
+        } catch {
+            try? FileManager.default.removeItem(at: sibling)
+            state = .failed("Couldn't install the update: \(error.localizedDescription)")
+            return Log.write("update install failed: \(error.localizedDescription)")
+        }
+        // Paths go in as arguments, never into the script text. The wait keeps two copies from running at once.
+        let relaunch = Process()
+        relaunch.executableURL = URL(fileURLWithPath: "/bin/sh")
+        relaunch.arguments = ["-c", "while kill -0 \"$1\" 2>/dev/null; do sleep 0.5; done; exec /usr/bin/open \"$2\"", "sh", String(getpid()), target.path]
+        try? relaunch.run()
+        Log.write("installed update over \(target.path)")
         NSApp.terminate(nil)
     }
 

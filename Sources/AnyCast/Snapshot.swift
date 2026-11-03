@@ -1,3 +1,4 @@
+#if DEBUG
 import AppKit
 import ScreenCaptureKit
 
@@ -46,3 +47,4 @@ enum Snapshot {
         }
     }
 }
+#endif

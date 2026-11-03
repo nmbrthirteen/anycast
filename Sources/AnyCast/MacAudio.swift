@@ -1,22 +1,70 @@
+import CoreAudio
 import Foundation
 
 @MainActor
 enum MacAudio {
-    private static var mutedByUs = false
+    private enum Muted { case device(AudioObjectID), script(Task<Bool, Never>) }
+    private static var muted: Muted?
 
     static func mute() {
-        guard !mutedByUs, osascript("output muted of (get volume settings)") == "false" else { return }
-        _ = osascript("set volume output muted true")
-        mutedByUs = true
+        guard muted == nil else { return }
+        if let device = defaultOutput(), canMute(device) {
+            guard muteState(device) == false, setMute(device, true) else { return }
+            muted = .device(device)
+        } else {
+            // Some outputs have no mute control of their own; AppleScript still mutes them through the system volume.
+            muted = .script(Task.detached {
+                guard osascript("output muted of (get volume settings)") == "false" else { return false }
+                _ = osascript("set volume output muted true")
+                return true
+            })
+        }
     }
 
     static func restore() {
-        guard mutedByUs else { return }
-        _ = osascript("set volume output muted false")
-        mutedByUs = false
+        switch muted {
+        case .device(let device): _ = setMute(device, false)
+        case .script(let muting):
+            Task.detached { if await muting.value { _ = osascript("set volume output muted false") } }
+        case nil: break
+        }
+        muted = nil
     }
 
-    private static func osascript(_ source: String) -> String {
+    private static func address(_ selector: AudioObjectPropertySelector, scope: AudioObjectPropertyScope) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: scope, mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private static func defaultOutput() -> AudioObjectID? {
+        var address = Self.address(kAudioHardwarePropertyDefaultOutputDevice, scope: kAudioObjectPropertyScopeGlobal)
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return nil }
+        return device
+    }
+
+    private static func canMute(_ device: AudioObjectID) -> Bool {
+        var address = Self.address(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput)
+        var settable: DarwinBoolean = false
+        return AudioObjectHasProperty(device, &address) && AudioObjectIsPropertySettable(device, &address, &settable) == noErr && settable.boolValue
+    }
+
+    private static func muteState(_ device: AudioObjectID) -> Bool? {
+        var address = Self.address(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
+        return value != 0
+    }
+
+    private static func setMute(_ device: AudioObjectID, _ mute: Bool) -> Bool {
+        var address = Self.address(kAudioDevicePropertyMute, scope: kAudioDevicePropertyScopeOutput)
+        var value: UInt32 = mute ? 1 : 0
+        return AudioObjectSetPropertyData(device, &address, 0, nil, UInt32(MemoryLayout<UInt32>.size), &value) == noErr
+    }
+
+    private nonisolated static func osascript(_ source: String) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", source]

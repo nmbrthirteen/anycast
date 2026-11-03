@@ -57,6 +57,7 @@ final class CastController: ObservableObject {
     private var runTask: Task<Void, Never>?
     private var seekTask: Task<Void, Never>?
     private var volumeTask: Task<Void, Never>?
+    private var serverStart: Task<Void, Error>?
 
     var renderer: Renderer? { renderers.first { $0.id == selectedID } ?? renderers.first }
     var isPlaying: Bool { tvState == "PLAYING" || tvState == "TRANSITIONING" }
@@ -67,7 +68,9 @@ final class CastController: ObservableObject {
 
     init() {
         selectedID = UserDefaults.standard.string(forKey: "selectedTV")
-        try? server.start()
+        Task {
+            do { try await startServer() } catch { message = error.localizedDescription }
+        }
         mirror.onStopped = { [weak self] error in Task { @MainActor in self?.mirrorStopped(error) } }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -82,11 +85,24 @@ final class CastController: ObservableObject {
             await ToolInstaller.shared.updateYtdlpIfDue()
         }
         scan()
-        Task { [weak self] in
-            while let self {
-                refreshPlaying()
-                try? await Task.sleep(for: .seconds(2))
-            }
+        media.onChange = { [weak self] in self?.refreshPlaying() }
+        media.start()
+        refreshPlaying()
+    }
+
+    private func startServer() async throws {
+        let start = serverStart ?? Task { try await server.start() }
+        serverStart = start
+        do { try await start.value } catch {
+            serverStart = nil
+            throw error
+        }
+    }
+
+    func lidClosedChanged(_ enabled: Bool) {
+        guard !enabled else { return }
+        Task {
+            do { try await power.removeRule() } catch { message = error.localizedDescription }
         }
     }
 
@@ -219,7 +235,7 @@ final class CastController: ObservableObject {
         volumeTask = Task { [client] in
             try? await Task.sleep(for: .milliseconds(150))
             guard !Task.isCancelled else { return }
-            try? await client?.setVolume(Int(value))
+            do { try await client?.setVolume(Int(value)) } catch { transportFailed(error) }
         }
     }
 
@@ -228,7 +244,9 @@ final class CastController: ObservableObject {
         working = nil
         pollTask?.cancel()
         let client = client
-        Task { try? await client?.stop() }
+        Task {
+            do { try await client?.stop() } catch { transportFailed(error) }
+        }
         endSession()
     }
 
@@ -238,6 +256,7 @@ final class CastController: ObservableObject {
         server.clear()
         mirror.stop()
         power.allowSleep()
+        media.stop()
     }
 
     private func endSession() {
@@ -298,6 +317,7 @@ final class CastController: ObservableObject {
         restartTask?.cancel()
         server.clear()
         if case .mirror = plan.source {} else { mirror.stop() }
+        if case .remote = plan.source {} else { try await startServer() }
 
         offset = plan.seeksByRestart ? plan.startAt : 0
         let item: MediaItem
@@ -305,18 +325,22 @@ final class CastController: ObservableObject {
         case .remote(let url, let mime):
             item = MediaItem(url: url, title: plan.title, mime: mime, kind: plan.kind, isLive: false)
         case .file(let url, let mime):
-            let served = server.publish(.file(url, mime: mime), ext: url.pathExtension.lowercased(), for: renderer.host)
+            let served = try server.publish(.file(url, mime: mime), ext: url.pathExtension.lowercased(), for: renderer.host)
             item = MediaItem(url: served, title: plan.title, mime: mime, kind: plan.kind, isLive: false)
         case .pipeline(let mime, let ext, let arguments):
             let start = offset
-            let served = server.publish(.stream(mime: mime, make: { FFmpegProducer(arguments: arguments(start)) }), ext: ext, for: renderer.host)
+            let served = try server.publish(.stream(mime: mime, make: { FFmpegProducer(arguments: arguments(start)) }), ext: ext, for: renderer.host)
             item = MediaItem(url: served, title: plan.title, mime: mime, kind: plan.kind, isLive: true)
         case .mirror(let make):
-            let served = server.publish(.stream(mime: "video/mpeg", live: true, make: make), ext: "ts", for: renderer.host)
+            let served = try server.publish(.stream(mime: "video/mpeg", live: true, make: make), ext: "ts", for: renderer.host)
             item = MediaItem(url: served, title: plan.title, mime: "video/mpeg", kind: .video, isLive: true)
         }
 
-        if case .remote = plan.source { power.allowSleep() } else { await power.keepAwake(lidClosed: lidClosed) }
+        if case .remote = plan.source {
+            power.allowSleep()
+        } else {
+            do { try await power.keepAwake(lidClosed: lidClosed) } catch { message = error.localizedDescription }
+        }
 
         working = "Starting on \(renderer.name)"
         Log.write("cast \(plan.title) mode=\(plan.mode) url=\(item.url.absoluteString.prefix(120)) start=\(plan.startAt)")

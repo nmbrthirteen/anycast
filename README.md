@@ -10,14 +10,16 @@ AnyCast talks to TVs over DLNA, the casting standard most Samsung, LG, Sony, His
 
 - **Browser tabs:** see every open tab and cast its video in one click. YouTube and most sites play at up to 1080p60 without re-encoding.
 - **Files:** drop a video, song, or photo on the window.
-- **Send to TV:** moves the app that's playing onto a virtual TV screen and streams it with sound. It keeps playing on another desktop or with the lid closed.
+- **Send to TV:** moves the app that's playing onto a virtual TV screen and streams it with sound. It keeps playing on another desktop. It also keeps playing with the lid closed when you turn on "Keep casting with the lid closed" in Settings, Power.
 - **Mirror:** stream any window or display, muting the Mac so sound only comes from the TV.
 - **Chrome extension:** cast the current tab with its sound, even on sites that block downloads.
 
 ## Install
 
 1. Download `AnyCast.dmg` from [Releases](../../releases) and drag AnyCast to Applications.
-2. Open it. Allow local network access when macOS asks, so it can find your TV.
+2. Open it. macOS blocks the first launch, because releases are signed with the project's own certificate and aren't notarized by Apple. Click Done.
+3. Open System Settings, then Privacy & Security. Under Security, click Open Anyway next to the AnyCast message, and confirm with your password.
+4. Allow local network access when macOS asks, so it can find your TV.
 
 On first launch AnyCast downloads the video tools it uses (ffmpeg and yt-dlp, about 110 MB) and keeps yt-dlp up to date.
 
@@ -41,9 +43,10 @@ It doesn't support Chromecast, Apple TV, or Roku, since those use other protocol
 ## How it works
 
 - Finds TVs with SSDP and controls them over UPnP AVTransport.
-- A built-in HTTP server streams files with range support. Web videos go to the TV directly when it can play them, or ffmpeg remuxes them without re-encoding.
+- A built-in HTTP server streams files with range support. Web videos go to the TV directly when it can play them. Otherwise ffmpeg relays them, re-encoding only what the TV can't play.
 - Mirroring uses ScreenCaptureKit and hardware H.264 in MPEG-TS at a constant rate, with live latency correction.
 - The TV screen is a virtual display created through private SkyLight APIs, so a future macOS update could break it.
+- "Keep casting with the lid closed" asks for your password once and adds the sudoers rule `/etc/sudoers.d/anycast-pmset`. The rule lets your user run only `pmset -a disablesleep 1` and `pmset -a disablesleep 0` without a password. Turning the setting off deletes the rule, which asks for your password again.
 
 Logs are in `~/Library/Logs/AnyCast.log`.
 

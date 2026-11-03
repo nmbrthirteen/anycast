@@ -3,6 +3,8 @@ import Network
 
 final class TabCastServer: @unchecked Sendable {
     static let port: UInt16 = 47801
+    // Derived from the "key" in Extension/manifest.json, so every unpacked install gets this ID.
+    static let extensionOrigin = "chrome-extension://khjccglcnoeigpocpbmeeajnmjjplinl"
     private let queue = DispatchQueue(label: "anycast.tabcast")
     private var listener: NWListener?
     var onSession: ((TabSession) -> Void)?
@@ -13,10 +15,10 @@ final class TabCastServer: @unchecked Sendable {
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
         websocket.maximumMessageSize = 32 << 20
-        // Any web page can reach localhost, so only browser extensions may send a stream.
+        // Any web page or other extension can reach localhost, so only the AnyCast extension may send a stream.
         websocket.setClientRequestHandler(queue) { _, headers in
             let origin = headers.first { $0.name.lowercased() == "origin" }?.value ?? ""
-            return NWProtocolWebSocket.Response(status: origin.hasPrefix("chrome-extension://") ? .accept : .reject, subprotocol: nil)
+            return NWProtocolWebSocket.Response(status: origin == Self.extensionOrigin ? .accept : .reject, subprotocol: nil)
         }
         parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
         guard let listener = try? NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!) else {

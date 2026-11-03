@@ -40,12 +40,6 @@ struct MirrorView: View {
             }
         }
         .onAppear(perform: controller.loadMirrorTargets)
-        .task {
-            while !Task.isCancelled {
-                controller.refreshPlaying()
-                try? await Task.sleep(for: .seconds(2))
-            }
-        }
     }
 }
 

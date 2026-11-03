@@ -23,7 +23,7 @@
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>AnyCast reads the video link from your browser tab and pauses it there.</string>
+	<string>AnyCast reads your open browser tabs to list them, gets the video link from the tab you cast, and pauses it there.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSLocalNetworkUsageDescription</key>
