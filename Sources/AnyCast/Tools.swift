@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum Tools {
     static var ffmpeg: String? { find("ffmpeg") }
@@ -31,16 +32,20 @@ enum Tools {
         try process.run()
         return try await withCheckedThrowingContinuation { continuation in
             Thread.detachNewThread {
-                var errors = Data()
-                let errorReader = Thread { errors = err.fileHandleForReading.readDataToEndOfFile() }
-                errorReader.start()
+                // Both pipes drain at once so a full stderr buffer can't stall the process while stdout is read.
+                let errors = OSAllocatedUnfairLock(initialState: Data())
+                let errorReader = DispatchGroup()
+                DispatchQueue.global().async(group: errorReader) {
+                    let data = err.fileHandleForReading.readDataToEndOfFile()
+                    errors.withLock { $0 = data }
+                }
                 let output = out.fileHandleForReading.readDataToEndOfFile()
-                while !errorReader.isFinished { usleep(1000) }
+                errorReader.wait()
                 process.waitUntilExit()
                 if process.terminationStatus == 0 {
                     continuation.resume(returning: output)
                 } else {
-                    let message = String(decoding: errors, as: UTF8.self)
+                    let message = String(decoding: errors.withLock { $0 }, as: UTF8.self)
                     let lastLine = message.split(separator: "\n").last.map(String.init) ?? "exit \(process.terminationStatus)"
                     continuation.resume(throwing: Failure(message: lastLine))
                 }

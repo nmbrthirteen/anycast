@@ -5,7 +5,7 @@ struct GitHubRelease {
     let assets: [String: URL]
 
     static func latest(repo: String) async throws -> GitHubRelease {
-        let request = try await authorized(URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!, accept: "application/vnd.github+json")
+        let request = Self.request(URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!, accept: "application/vnd.github+json")
         let (data, response) = try await URLSession.shared.data(for: request)
         try check(response)
         struct Payload: Decodable {
@@ -18,26 +18,17 @@ struct GitHubRelease {
     }
 
     static func download(_ asset: URL, to destination: URL) async throws -> URL {
-        let (file, response) = try await URLSession.shared.download(for: try await authorized(asset, accept: "application/octet-stream"))
+        let (file, response) = try await URLSession.shared.download(for: request(asset, accept: "application/octet-stream"))
         try check(response)
         try? FileManager.default.removeItem(at: destination)
         try FileManager.default.moveItem(at: file, to: destination)
         return destination
     }
 
-    // Private forks need a token; the gh CLI login is reused when it's installed.
-    private static func authorized(_ url: URL, accept: String) async throws -> URLRequest {
+    private static func request(_ url: URL, accept: String) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue(accept, forHTTPHeaderField: "Accept")
-        if let token = await token() { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         return request
-    }
-
-    private static func token() async -> String? {
-        if let env = ProcessInfo.processInfo.environment["GITHUB_TOKEN"], !env.isEmpty { return env }
-        guard let gh = Tools.find("gh"), let data = try? await Tools.run(gh, ["auth", "token"]) else { return nil }
-        let token = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        return token.isEmpty ? nil : token
     }
 
     private static func check(_ response: URLResponse) throws {

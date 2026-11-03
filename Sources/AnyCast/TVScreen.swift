@@ -31,16 +31,17 @@ final class TVScreen {
 
     // If someone picks "Entire Screen" in the macOS prompt, the TV screen becomes a mirror and the Mac rescales to 1080p. Undo that.
     private func keepExtended() {
-        extendTask?.cancel()
-        extendTask = Task { [weak self] in
-            while !Task.isCancelled, let id = self?.displayID {
-                Self.unmirror(id)
-                try? await Task.sleep(for: .seconds(2))
+        guard screenObserver == nil else { return }
+        screenObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                if let id = self?.displayID { Self.unmirror(id) }
             }
         }
     }
 
-    private var extendTask: Task<Void, Never>?
+    private var screenObserver: NSObjectProtocol?
 
     private static func unmirror(_ id: CGDirectDisplayID) {
         guard CGDisplayIsInMirrorSet(id) != 0 else { return }
@@ -52,7 +53,8 @@ final class TVScreen {
     }
 
     func turnOff() {
-        extendTask?.cancel()
+        if let screenObserver { NotificationCenter.default.removeObserver(screenObserver) }
+        screenObserver = nil
         display?.destroy()
         display = nil
     }
@@ -91,15 +93,15 @@ enum WindowMover {
 
     static func move(_ window: AXUIElement, of pid: pid_t, to bounds: CGRect) async -> Bool {
         NSRunningApplication(processIdentifier: pid)?.activate()
-        if bool(window, "AXFullScreen") {
+        if AX.bool(window, "AXFullScreen") {
             AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-            guard await waitUntil({ !bool(window, "AXFullScreen") }) else {
+            guard await waitUntil({ !AX.bool(window, "AXFullScreen") }) else {
                 Log.write("move: window stayed full screen")
                 return false
             }
             try? await Task.sleep(for: .milliseconds(800))
         }
-        if bool(window, kAXMinimizedAttribute) {
+        if AX.bool(window, kAXMinimizedAttribute) {
             AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
             try? await Task.sleep(for: .milliseconds(500))
         }
@@ -115,19 +117,19 @@ enum WindowMover {
             }
             try? await Task.sleep(for: .milliseconds(500))
             landed = isInside(window, bounds)
-            Log.write("move: attempt \(attempt) landed=\(landed) at \(framePosition(window).map { "\($0)" } ?? "?")")
+            Log.write("move: attempt \(attempt) landed=\(landed) at \(AX.point(window).map { "\($0)" } ?? "?")")
         }
         guard landed else { return false }
 
         AXUIElementPerformAction(window, kAXRaiseAction as CFString)
         AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanTrue)
-        _ = await waitUntil({ bool(window, "AXFullScreen") })
+        _ = await waitUntil({ AX.bool(window, "AXFullScreen") })
         try? await Task.sleep(for: .milliseconds(800))
         let stayed = isInside(window, bounds)
         Log.write("move: full screen on tv=\(stayed)")
         if !stayed {
             AXUIElementSetAttributeValue(window, "AXFullScreen" as CFString, kCFBooleanFalse)
-            _ = await waitUntil({ !bool(window, "AXFullScreen") })
+            _ = await waitUntil({ !AX.bool(window, "AXFullScreen") })
             try? await Task.sleep(for: .milliseconds(800))
             var origin = CGPoint(x: bounds.minX, y: bounds.minY)
             var size = bounds.size
@@ -150,49 +152,23 @@ enum WindowMover {
     }
 
     private static func isInside(_ window: AXUIElement, _ bounds: CGRect) -> Bool {
-        framePosition(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
+        AX.point(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
     }
 
     // Moves the sent window back if it left the TV screen (the lid closed and macOS rearranged things).
     // A window still on the TV is left alone so the user's focus on the laptop isn't taken.
     static func restore(_ sent: SentWindow, on bounds: CGRect) async {
-        guard framePosition(sent.element) != nil, !isInside(sent.element, bounds) else { return }
+        guard AX.point(sent.element) != nil, !isInside(sent.element, bounds) else { return }
         let moved = await move(sent.element, of: sent.pid, to: bounds)
         Log.write("moved pid \(sent.pid) back onto the tv screen: \(moved)")
     }
 
     private static func frontWindow(of app: AXUIElement) -> AXUIElement? {
-        for attribute in [kAXFocusedWindowAttribute, kAXMainWindowAttribute] {
-            var value: CFTypeRef?
-            if AXUIElementCopyAttributeValue(app, attribute as CFString, &value) == .success, let value {
-                return (value as! AXUIElement)
-            }
-        }
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &value) == .success,
-              let windows = value as? [AXUIElement] else { return nil }
-        return windows.max { area($0) < area($1) }
-    }
-
-    private static func bool(_ element: AXUIElement, _ attribute: String) -> Bool {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
-        return (value as? Bool) ?? false
-    }
-
-    private static func framePosition(_ element: AXUIElement) -> CGPoint? {
-        var value: CFTypeRef?
-        var point = CGPoint.zero
-        guard AXUIElementCopyAttributeValue(element, kAXPositionAttribute as CFString, &value) == .success,
-              let value, AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
-        return point
+        AX.element(app, kAXFocusedWindowAttribute) ?? AX.element(app, kAXMainWindowAttribute)
+            ?? AX.children(app, kAXWindowsAttribute).max { area($0) < area($1) }
     }
 
     private static func area(_ element: AXUIElement) -> CGFloat {
-        var value: CFTypeRef?
-        var size = CGSize.zero
-        guard AXUIElementCopyAttributeValue(element, kAXSizeAttribute as CFString, &value) == .success,
-              let value, AXValueGetValue(value as! AXValue, .cgSize, &size) else { return 0 }
-        return size.width * size.height
+        AX.size(element).map { $0.width * $0.height } ?? 0
     }
 }

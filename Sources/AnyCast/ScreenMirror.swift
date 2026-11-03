@@ -1,6 +1,7 @@
 import AppKit
 import CoreMedia
 import ScreenCaptureKit
+import Synchronization
 
 struct MirrorTarget: Identifiable, Hashable {
     enum Kind: Hashable { case display(CGDirectDisplayID), window(CGWindowID) }
@@ -258,7 +259,7 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         return latestFrame
     }
 
-    fileprivate func markEncoderStart(_ date: Date) -> StreamClock {
+    fileprivate func markEncoderStart() -> StreamClock {
         lock.withLock {
             streamClock = StreamClock()
             return streamClock
@@ -336,7 +337,7 @@ private final class MirrorEncoder: StreamProducer {
     private let mirror: ScreenMirror
     private let fifo = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-audio-\(UUID().uuidString)").path
     private let ffmpeg: FFmpegProducer
-    private var running = false
+    private let running = Atomic(false)
 
     init(mirror: ScreenMirror) {
         self.mirror = mirror
@@ -364,21 +365,21 @@ private final class MirrorEncoder: StreamProducer {
         ffmpeg.onStart = { process in videoInput = (process.standardInput as? Pipe)?.fileHandleForWriting }
         let output = try ffmpeg.start()
         guard let videoInput else { throw Tools.Failure(message: "Encoder did not start") }
-        running = true
+        running.store(true, ordering: .relaxed)
         mirror.clearAudio()
-        let clock = mirror.markEncoderStart(Date())
+        let clock = mirror.markEncoderStart()
         let fps = mirror.settings.fps
 
         Thread.detachNewThread { [self] in
             // Every due frame is written, black until capture starts, so video time never falls behind the audio.
             let black = Data(repeating: 16, count: mirror.width * mirror.height) + Data(repeating: 128, count: mirror.width * mirror.height / 2)
             var written = 0
-            while running {
+            while running.load(ordering: .relaxed) {
                 let due = Int(clock.now() * Double(fps)) - written
                 if due > 0 {
                     let frame = mirror.currentFrame(count: due) ?? black
-                    for _ in 0..<due where running {
-                        guard (try? videoInput.write(contentsOf: frame)) != nil else { running = false; break }
+                    for _ in 0..<due where running.load(ordering: .relaxed) {
+                        guard (try? videoInput.write(contentsOf: frame)) != nil else { running.store(false, ordering: .relaxed); break }
                         written += 1
                     }
                 }
@@ -393,13 +394,13 @@ private final class MirrorEncoder: StreamProducer {
             guard fd >= 0 else { return }
             defer { close(fd) }
             var written = 0
-            while running {
+            while running.load(ordering: .relaxed) {
                 let due = Int(clock.now() * Double(ScreenMirror.sampleRate)) - written
                 if due > 0 {
                     let samples = mirror.takeAudio(frames: due)
                     samples.withUnsafeBytes { bytes in
                         var offset = 0
-                        while running && offset < bytes.count {
+                        while running.load(ordering: .relaxed) && offset < bytes.count {
                             let result = write(fd, bytes.baseAddress! + offset, bytes.count - offset)
                             if result > 0 { offset += result } else { Thread.sleep(forTimeInterval: 0.005) }
                         }
@@ -413,7 +414,7 @@ private final class MirrorEncoder: StreamProducer {
     }
 
     func stop() {
-        running = false
+        running.store(false, ordering: .relaxed)
         ffmpeg.stop()
         let path = fifo
         DispatchQueue.global().asyncAfter(deadline: .now() + 2) { unlink(path) }

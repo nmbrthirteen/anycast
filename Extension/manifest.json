@@ -2,8 +2,9 @@
   "manifest_version": 3,
   "name": "AnyCast",
   "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwbVXiElM44XmFXZPbKjmVm+64ODadhCK1xpQFMOijYzpoaYYjeZKJXpZfVtUt/98dBuhWgtp1k9t55Yl+rKK5ZYPSvJJIG4mclFHzCM+to983SIWOD7y8j6iAwFB4otD1yrzW84uHFxTbfJE37mqCgckc6/cZ6C20GBf3Wup8gDrAJrvPMMuziOexnPAdCfgM3S6KcfcnAaOAvSGzvvQ/eynVo5SuiwE7UoNqq/OPVumZGkzvH538XBZaCGFaMF482SbJBOMZ0ho6LDPnSn4ZG2qlInUXbQnhRSq/4D0hZKUW0BdFKXvq4r0BBw0UGiCP+ud5hIBdigR///wr9nQyQIDAQAB",
   "description": "Send this tab's video and sound to your TV through the AnyCast app.",
-  "permissions": ["tabCapture", "offscreen"],
+  "permissions": ["tabCapture", "offscreen", "storage"],
   "background": { "service_worker": "background.js" },
   "action": { "default_title": "Cast this tab to your TV" },
   "icons": { "128": "icon128.png" }

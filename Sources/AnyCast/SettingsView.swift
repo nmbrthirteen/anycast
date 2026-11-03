@@ -106,7 +106,7 @@ private struct QualitySettings: View {
                 .pickerStyle(.segmented)
                 Toggle("TV can play HEVC (H.265)", isOn: $playsHEVC)
             } footer: {
-                Text("AnyCast always sends the original stream when your TV supports it. Anything it can't play is converted to H.264 at 20 Mbps or more, and the sound to AAC at 320 kbps.")
+                Text("AnyCast always sends the original stream when your TV supports it. Video it can't play is converted to H.264 at 20 Mbps or more. Sound in videos becomes AAC at 320 kbps, and songs become MP3 at 320 kbps. Mirroring sends sound as AAC at 256 kbps.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let tv = controller.renderer {
@@ -164,20 +164,24 @@ private struct MirroringSettings: View {
 }
 
 private struct PowerSettings: View {
+    @EnvironmentObject private var controller: CastController
     @AppStorage(Pref.lidClosed) private var lidClosed = false
+
+    private var staysAwake: String { lidClosed ? "Mac stays awake, even with the lid closed" : "Mac stays awake while the lid is open" }
 
     var body: some View {
         Form {
             Section {
                 Toggle("Keep casting with the lid closed", isOn: $lidClosed)
+                    .onChange(of: lidClosed) { _, enabled in controller.lidClosedChanged(enabled) }
             } footer: {
-                Text("Asks for your password once, the first time. Normal sleep comes back when casting stops or AnyCast quits. Keep your Mac plugged in.")
+                Text("The first time you cast, AnyCast asks for your password to add the sudoers rule /etc/sudoers.d/anycast-pmset. It lets AnyCast run only \"pmset -a disablesleep 1\" and \"pmset -a disablesleep 0\" without a password. Turning this off deletes the rule, which asks for your password again. Normal sleep comes back when casting stops or AnyCast quits. Keep your Mac plugged in.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("How sleep works") {
                 LabeledContent("Direct from web", value: "Mac can sleep")
-                LabeledContent("Files and relayed videos", value: "Mac stays awake")
-                LabeledContent("Mirroring", value: "Needs the lid open")
+                LabeledContent("Files and relayed videos", value: staysAwake)
+                LabeledContent("Mirroring", value: staysAwake)
             }
         }
         .formStyle(.grouped)

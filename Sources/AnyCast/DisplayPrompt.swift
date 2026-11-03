@@ -72,6 +72,29 @@ enum AX {
         return (value as! AXUIElement)
     }
 
+    static func bool(_ element: AXUIElement, _ attribute: String) -> Bool {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
+        return (value as? Bool) ?? false
+    }
+
+    static func point(_ element: AXUIElement) -> CGPoint? {
+        var point = CGPoint.zero
+        return value(element, kAXPositionAttribute, .cgPoint, &point) ? point : nil
+    }
+
+    static func size(_ element: AXUIElement) -> CGSize? {
+        var size = CGSize.zero
+        return value(element, kAXSizeAttribute, .cgSize, &size) ? size : nil
+    }
+
+    private static func value(_ element: AXUIElement, _ attribute: String, _ type: AXValueType, _ result: UnsafeMutableRawPointer) -> Bool {
+        var value: AnyObject?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success, let value,
+              CFGetTypeID(value) == AXValueGetTypeID() else { return false }
+        return AXValueGetValue(value as! AXValue, type, result)
+    }
+
     static func children(_ element: AXUIElement, _ attribute: String = kAXChildrenAttribute) -> [AXUIElement] {
         var value: AnyObject?
         AXUIElementCopyAttributeValue(element, attribute as CFString, &value)

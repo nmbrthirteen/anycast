@@ -170,7 +170,7 @@ private struct DoneStep: View {
         VStack(spacing: 22) {
             StepHeader(symbol: "checkmark", title: "You're all set", subtitle: "Three ways to cast:")
             VStack(alignment: .leading, spacing: 14) {
-                tip("safari", "Double-click a browser tab in the sidebar to play its video on the TV.")
+                tip("safari", "Double-click a tab in the list to play its video on the TV.")
                 tip("arrow.down.doc", "Drop a video, song, or photo anywhere in the window.")
                 tip("rectangle.on.rectangle", "Use Mirror to send the window that's playing, with sound.")
             }

@@ -20,26 +20,48 @@ final class MediaServer: @unchecked Sendable {
     private var activeProducer: StreamProducer?
     private(set) var port: UInt16 = 0
 
-    func start() throws {
+    func start() async throws {
         let listener = try NWListener(using: .tcp, on: .any)
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { state in
-            if case .ready = state { ready.signal() }
-            if case .failed = state { ready.signal() }
-        }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
-        listener.start(queue: queue)
-        _ = ready.wait(timeout: .now() + 5)
-        port = listener.port?.rawValue ?? 0
-        self.listener = listener
+        do {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                // The handler clears itself so the continuation resumes exactly once.
+                listener.stateUpdateHandler = { [weak listener] state in
+                    switch state {
+                    case .ready:
+                        listener?.stateUpdateHandler = nil
+                        continuation.resume()
+                    case .failed(let error), .waiting(let error):
+                        listener?.stateUpdateHandler = nil
+                        continuation.resume(throwing: error)
+                    case .cancelled:
+                        listener?.stateUpdateHandler = nil
+                        continuation.resume(throwing: CancellationError())
+                    default:
+                        break
+                    }
+                }
+                listener.start(queue: queue)
+            }
+        } catch {
+            listener.cancel()
+            throw Tools.Failure(message: "AnyCast couldn't start its media server: \(error.localizedDescription)")
+        }
+        lock.withLock {
+            port = listener.port?.rawValue ?? 0
+            self.listener = listener
+        }
     }
 
-    func publish(_ content: Content, ext: String, for host: String) -> URL {
+    func publish(_ content: Content, ext: String, for host: String) throws -> URL {
+        guard let ip = Self.localAddress(toward: host) else {
+            throw Tools.Failure(message: "Your Mac has no network route to the TV at \(host). Check both are on the same Wi-Fi, then try again.")
+        }
         let token = UUID().uuidString.prefix(8).lowercased()
         lock.lock()
         routes = ["/\(token).\(ext)": content]
+        let port = port
         lock.unlock()
-        let ip = Self.localAddress(toward: host) ?? "127.0.0.1"
         return URL(string: "http://\(ip):\(port)/\(token).\(ext)")!
     }
 
