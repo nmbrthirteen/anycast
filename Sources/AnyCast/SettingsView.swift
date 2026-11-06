@@ -189,7 +189,7 @@ private struct PowerSettings: View {
                 Toggle("Keep casting with the lid closed", isOn: $lidClosed)
                     .onChange(of: lidClosed) { _, enabled in controller.lidClosedChanged(enabled) }
             } footer: {
-                Text("The first time you cast, AnyCast asks for your password to add the sudoers rule /etc/sudoers.d/anycast-pmset. It lets AnyCast run only \"pmset -a disablesleep 1\" and \"pmset -a disablesleep 0\" without a password. Turning this off deletes the rule, which asks for your password again. Normal sleep comes back when casting stops or AnyCast quits. Keep your Mac plugged in.")
+                Text("The first time you cast, AnyCast asks for your password to add the sudoers rule /etc/sudoers.d/anycast-pmset. It lets AnyCast run only \"pmset -a disablesleep 1\" and \"pmset -a disablesleep 0\" without a password. Turning this off deletes the rule, which asks for your password again. Normal sleep comes back when casting stops or AnyCast quits. Works on battery too, but plug in for long sessions so the battery doesn't run out.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("How sleep works") {
