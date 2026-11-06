@@ -6,7 +6,6 @@ enum Pref {
     static let mirrorCursor = "mirrorCursor"
     static let mirrorAudio = "mirrorAudio"
     static let lidClosed = "lidClosed"
-    static let sendMode = "sendMode"
     static let pauseBrowser = "pauseBrowser"
     static let resumePosition = "resumePosition"
     static let showMenuBar = "showMenuBar"
@@ -19,8 +18,4 @@ enum Pref {
     static let snapshotDelay = "snapshotDelay"
     static let sleepDisabledByAnyCast = "sleepDisabledByAnyCast"
     static let mutedByAnyCast = "mutedByAnyCast"
-}
-
-enum SendMode: String {
-    case keepOnMac, moveToTVScreen
 }

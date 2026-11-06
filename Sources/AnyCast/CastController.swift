@@ -34,7 +34,6 @@ final class CastController: ObservableObject {
     @AppStorage(Pref.resumePosition) var resumePosition = true
     @AppStorage(Pref.lowLatency) var lowLatency = true
     @AppStorage(Pref.muteMac) var muteMac = true
-    @AppStorage(Pref.sendMode) var sendMode = SendMode.keepOnMac
 
     let mirror = ScreenMirror()
     let browser = BrowserWatcher()
@@ -42,12 +41,11 @@ final class CastController: ObservableObject {
     let recentApps = RecentApps()
     let media = MediaDetector()
     var sentWindow: SentWindow?
-    var mirroredApp: PlayingApp?
-    var followedLidClosed = false
-    var lidIsClosed = Lid.isClosed
     var lastDisplayChange: Date?
     var captureRestarts: [Date] = []
-    var isHandingOff = false
+    var latencyTarget = 1.5
+    var lastTVPosition = 0.0
+    var tvPositionRepeats = 0
     var restoreTask: Task<Void, Never>?
     var restartTask: Task<Void, Never>?
     var handledLaunchArguments = false
@@ -95,7 +93,6 @@ final class CastController: ObservableObject {
         media.onChange = { [weak self] in self?.refreshPlaying() }
         media.start()
         refreshPlaying()
-        watchLid()
     }
 
     private func startServer() async throws {
@@ -104,16 +101,6 @@ final class CastController: ObservableObject {
         do { try await start.value } catch {
             serverStart = nil
             throw error
-        }
-    }
-
-    // Lid changes don't always reach the app as a screen change, so the lid is checked while casting.
-    private func watchLid() {
-        Task { [weak self] in
-            while let self {
-                if plan != nil { lidMayHaveChanged() }
-                try? await Task.sleep(for: .seconds(2))
-            }
         }
     }
 
@@ -272,7 +259,16 @@ final class CastController: ObservableObject {
         endSession()
     }
 
+    // A TV left playing a stream that vanished keeps waiting on it, and takes about 20 seconds to accept the next cast.
     func shutdown() {
+        if plan != nil, let client {
+            let stopped = DispatchSemaphore(value: 0)
+            Task.detached {
+                try? await client.stop()
+                stopped.signal()
+            }
+            _ = stopped.wait(timeout: .now() + 1.5)
+        }
         tvScreen.turnOff()
         MacAudio.restore()
         server.clear()
@@ -285,7 +281,6 @@ final class CastController: ObservableObject {
         pollTask?.cancel()
         seekTask?.cancel()
         leaveTVScreen()
-        mirroredApp = nil
         restartTask?.cancel()
         captureRestarts = []
         lastDisplayChange = nil
@@ -299,16 +294,13 @@ final class CastController: ObservableObject {
         position = 0
     }
 
-    // `continuing` keeps the current session's state, for steps like reconnecting or following the lid.
+    // `continuing` keeps a pending capture restart, for steps like reconnecting.
     func run(_ status: String, continuing: Bool = false, _ work: @escaping () async throws -> Void) {
         guard renderer != nil else {
             message = "No TV selected. Scan for your TV first."
             return
         }
-        if !continuing {
-            mirroredApp = nil
-            restartTask?.cancel()
-        }
+        if !continuing { restartTask?.cancel() }
         working = status
         message = nil
         runTask?.cancel()
@@ -383,6 +375,8 @@ final class CastController: ObservableObject {
             throw error
         }
         self.plan = plan
+        latencyTarget = 1.5
+        tvPositionRepeats = 0
         duration = plan.duration
         position = 0
         hasPlayed = false
@@ -437,7 +431,7 @@ final class CastController: ObservableObject {
                 }
                 guard state == "STOPPED" || state == "NO_MEDIA_PRESENT" else { continue }
                 // Screen changes can stall the stream long enough for the TV to give up, so reconnect once instead of ending.
-                if hasPlayed, let plan, plan.mode == .mirror, !isHandingOff, working == nil, let changed = lastDisplayChange, Date().timeIntervalSince(changed) < 30 {
+                if hasPlayed, let plan, plan.mode == .mirror, working == nil, let changed = lastDisplayChange, Date().timeIntervalSince(changed) < 30 {
                     Log.write("tv stopped after a screen change, reconnecting")
                     lastDisplayChange = nil
                     reconnect(plan)

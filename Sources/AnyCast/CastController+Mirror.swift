@@ -33,14 +33,8 @@ extension CastController {
             guard let app = chosen ?? playingApps.first else {
                 throw Tools.Failure(message: "Nothing has played sound in the last few minutes. Start the video, or pick the app from the menu.")
             }
-            if sendMode == .keepOnMac && !Lid.isClosed {
-                try await keepOnMac(app)
-            } else if WindowMover.isAllowed {
+            if WindowMover.isAllowed {
                 try await sendToTVScreen(app)
-                if sendMode == .keepOnMac {
-                    mirroredApp = app
-                    followedLidClosed = true
-                }
             } else {
                 WindowMover.requestPermission()
                 try await mirrorWindow(of: app)
@@ -66,12 +60,25 @@ extension CastController {
 
     func mirrorWindow(of app: PlayingApp) async throws {
         guard ScreenMirror.hasPermission else { return try await mirrorWithPicker() }
-        guard let window = try await windowTarget(of: app) else {
+        var found = try await windowTarget(of: app)
+        if found == nil { found = await showDesktop(of: app) }
+        guard let window = found else {
             if ScreenMirror.hasWindowOnOtherDesktop(app.pid) { throw Tools.Failure(message: Self.otherDesktopMessage(app.name)) }
             return try await mirrorWithPicker()
         }
         Log.write("mirroring playing app \(app.name) crop=\(window.crop.map { "\($0)" } ?? "none")")
         try await mirrorCast(window)
+    }
+
+    // macOS only draws the visible desktop, so a video on another desktop (often a full screen one) is brought into view first.
+    private func showDesktop(of app: PlayingApp) async -> MirrorTarget? {
+        guard ScreenMirror.hasWindowOnOtherDesktop(app.pid) else { return nil }
+        NSRunningApplication(processIdentifier: app.pid)?.activate()
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(300))
+            if let window = try? await windowTarget(of: app) { return window }
+        }
+        return nil
     }
 
     private func windowTarget(of app: PlayingApp) async throws -> MirrorTarget? {
@@ -80,17 +87,6 @@ extension CastController {
             window.crop = await browser.videoFrame(inFrontTabOf: browserName)
         }
         return window
-    }
-
-    private func keepOnMac(_ app: PlayingApp) async throws {
-        try await mirrorWindow(of: app)
-        guard mirror.windowID != nil else { return }
-        mirroredApp = app
-        followedLidClosed = false
-        if lidClosed && !WindowMover.isAllowed {
-            WindowMover.requestPermission()
-            message = "Allow AnyCast in Accessibility settings so the video can move to the TV screen when you close the lid."
-        }
     }
 
     func mirrorWithPicker() async throws {
@@ -106,9 +102,7 @@ extension CastController {
         Log.write("capture stopped: \(error?.localizedDescription ?? "no error") tv screen online=\(tvScreen.isOnline)")
         guard plan?.mode == .mirror else { return }
         lastDisplayChange = Date()
-        guard !isHandingOff else { return }
-        if lidMayHaveChanged() { return }
-        guard tvScreenOn || mirroredApp != nil else { return stop() }
+        guard tvScreenOn else { return stop() }
         captureRestarts = captureRestarts.filter { Date().timeIntervalSince($0) < 60 } + [Date()]
         guard captureRestarts.count <= 3 else {
             message = "macOS kept stopping the capture. Start casting again."
@@ -137,10 +131,8 @@ extension CastController {
             }
             guard let id = tvScreen.displayID else { return }
             target = tvScreenTarget(id)
-        } else if let app = mirroredApp, let window = try await windowTarget(of: app) {
-            target = window
         } else {
-            throw Tools.Failure(message: "The video's window closed, so mirroring stopped.")
+            return
         }
         try Task.checkCancellation()
         let size = (mirror.width, mirror.height)
@@ -152,98 +144,28 @@ extension CastController {
     }
 
     func screensChanged() {
-        lidMayHaveChanged()
         scheduleRestore()
     }
 
     // Waits for macOS to finish rearranging screens, then puts the video back on the TV screen if it was knocked off.
     private func scheduleRestore() {
-        guard tvScreenOn, sentWindow != nil else { return }
+        guard tvScreenOn else { return }
         let previous = restoreTask
         previous?.cancel()
         restoreTask = Task {
             await previous?.value
             try? await Task.sleep(for: .seconds(2))
-            guard !Task.isCancelled, !isHandingOff, tvScreenOn, let sentWindow, tvScreen.isOnline, let id = tvScreen.displayID,
+            guard !Task.isCancelled, tvScreenOn else { return }
+            sendStraysHome()
+            guard working == nil, let sentWindow, tvScreen.isOnline, let id = tvScreen.displayID,
                   await WindowMover.restore(sentWindow, on: CGDisplayBounds(id)) else { return }
             if Self.isBrowser(sentWindow.pid) { await VideoFullscreen.restore(on: id, in: sentWindow.pid) }
         }
     }
 
-    @discardableResult
-    func lidMayHaveChanged() -> Bool {
-        let closed = Lid.isClosed
-        if closed != lidIsClosed {
-            lidIsClosed = closed
-            Log.write("lid \(closed ? "closed" : "opened")")
-        }
-        return followLid()
-    }
-
-    // A closed lid leaves no screen to draw a window kept on the Mac, so it moves to the TV screen until the lid opens.
-    // Each lid change is acted on once, so a failed move isn't retried on every poll.
-    private func followLid() -> Bool {
-        guard let app = mirroredApp, plan?.mode == .mirror, lidIsClosed != followedLidClosed,
-              renderer != nil, ToolInstaller.isComplete, working == nil, !isHandingOff else { return false }
-        if lidIsClosed && !WindowMover.isAllowed { return false }
-        followedLidClosed = lidIsClosed
-        if lidIsClosed {
-            handOff("Moving the video to the TV screen") { [self] in try await sendToTVScreen(app) }
-        } else {
-            handOff("Moving the video back to your Mac") { [self] in try await returnToMac(app) }
-        }
-        return true
-    }
-
-    private func handOff(_ status: String, _ work: @escaping () async throws -> Void) {
-        Log.write(status)
-        let restart = restartTask
-        restart?.cancel()
-        restoreTask?.cancel()
-        isHandingOff = true
-        run(status, continuing: true) { [self] in
-            defer {
-                isHandingOff = false
-                if !Task.isCancelled, plan?.mode == .mirror, !mirror.isCapturing { mirrorStopped(nil) }
-            }
-            await restart?.value
-            try await work()
-        }
-    }
-
-    private func returnToMac(_ app: PlayingApp) async throws {
-        var screen: CGDirectDisplayID?
-        for _ in 0..<20 {
-            screen = Lid.builtInDisplay
-            if screen != nil { break }
-            try await Task.sleep(for: .milliseconds(250))
-        }
-        guard let screen, let element = sentWindow?.element ?? WindowMover.frontWindow(of: app.pid) else {
-            mirroredApp = nil
-            throw Tools.Failure(message: "Couldn't bring \(app.name) back to your Mac, so it stays on the TV screen.")
-        }
-        let moved = await WindowMover.move(element, of: app.pid, to: CGDisplayBounds(screen))
-        try Task.checkCancellation()
-        Log.write("moved \(app.name) back to the mac: \(moved)")
-        var window: MirrorTarget?
-        for _ in 0..<8 where moved && window == nil {
-            window = try await windowTarget(of: app)
-            if window == nil { try await Task.sleep(for: .milliseconds(250)) }
-        }
-        guard let window else {
-            mirroredApp = nil
-            throw Tools.Failure(message: "Couldn't bring \(app.name) back to your Mac, so it stays on the TV screen.")
-        }
-        sentWindow = nil
-        tvScreenOn = false
-        defer { tvScreen.turnOff() }
-        do {
-            try await mirrorCast(window)
-        } catch {
-            stop()
-            throw error
-        }
-        if Self.isBrowser(app.pid) { await VideoFullscreen.restore(on: screen, in: app.pid) }
+    private func sendStraysHome() {
+        guard WindowMover.isAllowed else { return }
+        WindowMover.sendHome(tvScreen.strayWindows(), except: sentWindow)
     }
 
     private static func isBrowser(_ pid: pid_t) -> Bool {
@@ -262,8 +184,16 @@ extension CastController {
             message = Self.otherDesktopMessage(String(title.split(separator: ":").first ?? "The"))
         }
         let buffered = mirror.streamSeconds - tvPosition
+        // The TV reports whole seconds, so a position that holds for several polls means it ran dry and is rebuffering.
+        tvPositionRepeats = tvPosition == lastTVPosition ? tvPositionRepeats + 1 : 0
+        lastTVPosition = tvPosition
+        if tvPositionRepeats >= 3 {
+            tvPositionRepeats = 0
+            latencyTarget = min(latencyTarget + 0.5, 5)
+            Log.write("tv stalled, keeping \(latencyTarget)s buffered from now on")
+        }
         if lowLatency {
-            if buffered > 5.2 { mirror.speed = 0.7 } else if buffered < 4.6 { mirror.speed = 1 }
+            if buffered > latencyTarget + 0.6 { mirror.speed = 0.8 } else if buffered < latencyTarget { mirror.speed = 1 }
         }
         Log.write(String(format: "mirror buffered %.1fs speed %.1f | ", buffered, mirror.speed) + mirror.takeStats())
     }
@@ -293,23 +223,31 @@ extension CastController {
         try Task.checkCancellation()
         try await mirror.start(tvScreenTarget(id), settings: mirrorSettings)
         try await castMirror(title: "TV screen")
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            sendStraysHome()
+        }
     }
 
+    // The TV takes several seconds to start playing, so it loads while the window moves over.
     private func sendToTVScreen(_ app: PlayingApp) async throws {
-        _ = try await tvScreen.turnOn()
+        let id = try await tvScreen.turnOn()
         tvScreenOn = true
-        guard let bounds = tvScreen.bounds, let window = WindowMover.frontWindow(of: app.pid),
-              await WindowMover.move(window, of: app.pid, to: bounds) else {
-            try Task.checkCancellation()
-            try await showTVScreen()
-            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
+        async let casting: Void = showTVScreen()
+        var moved = false
+        if let window = WindowMover.frontWindow(of: app.pid) {
+            sentWindow = SentWindow(pid: app.pid, element: window, fullScreen: false)
+            moved = await WindowMover.move(window, of: app.pid, to: CGDisplayBounds(id))
+            sentWindow = moved ? SentWindow(pid: app.pid, element: window, fullScreen: WindowMover.isFullScreen(window)) : nil
         }
-        try Task.checkCancellation()
-        Log.write("moved \(app.name) onto the tv screen")
-        sentWindow = SentWindow(pid: app.pid, element: window, fullScreen: WindowMover.isFullScreen(window))
-        try await showTVScreen()
-        if Self.isBrowser(app.pid), let id = tvScreen.displayID {
-            await VideoFullscreen.restore(on: id, in: app.pid)
+        if moved {
+            try Task.checkCancellation()
+            Log.write("moved \(app.name) onto the tv screen")
+            if Self.isBrowser(app.pid) { await VideoFullscreen.restore(on: id, in: app.pid) }
+        }
+        try await casting
+        guard moved else {
+            throw Tools.Failure(message: "Couldn't move \(app.name)'s window. Drag it onto the TV screen, off the right edge of your display.")
         }
     }
 

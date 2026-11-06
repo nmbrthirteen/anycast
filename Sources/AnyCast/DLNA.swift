@@ -97,12 +97,15 @@ struct DLNAClient {
     private static let rendering = "urn:schemas-upnp-org:service:RenderingControl:1"
 
     func load(_ item: MediaItem) async throws {
+        let started = Date()
         _ = try? await call(Self.transport, "Stop")
+        let stopped = Date()
         do {
             try await setURIWhenAllowed(item, mime: item.mime)
         } catch let error as UPnPError where item.mime == "video/mpeg" && error.code != 606 {
             try await setURIWhenAllowed(item, mime: "video/mp2t")
         }
+        Log.write(String(format: "tv took %.1fs to stop, %.1fs to accept the stream", stopped.timeIntervalSince(started), Date().timeIntervalSince(stopped)))
         var lastError: Error?
         for _ in 0..<6 {
             do {
@@ -110,6 +113,7 @@ struct DLNAClient {
                 return
             } catch {
                 lastError = error
+                Log.write("play failed: \(error.localizedDescription), retrying")
                 try await Task.sleep(for: .milliseconds(800))
             }
         }
@@ -151,6 +155,7 @@ struct DLNAClient {
             do {
                 return try await setURI(item, mime: mime)
             } catch let error as UPnPError where error.code == 606 {
+                Log.write("tv refused new media (606), retrying")
                 try await Task.sleep(for: .milliseconds(1500))
             }
         }

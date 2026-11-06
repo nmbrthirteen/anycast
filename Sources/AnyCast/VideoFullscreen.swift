@@ -6,25 +6,40 @@ import ScreenCaptureKit
 enum VideoFullscreen {
     private static let gridWidth = 160, gridHeight = 90
 
-    // Clicks and keys go to whatever app is in front, so each step first checks the user hasn't switched away.
-    // F toggles full screen on most players, so it's only pressed when the video is clearly still small.
+    // Clicks and keys go to whatever app is in front, so the video's app is brought forward before each one.
+    // F toggles full screen on most players, so it's only pressed once the video has had time to grow and clearly hasn't.
     static func restore(on displayID: CGDirectDisplayID, in pid: pid_t) async {
         let screen = CGDisplayBounds(displayID)
-        guard let video = await movingRegion(on: displayID, in: screen) else {
-            return Log.write("video full screen: no playing video found")
-        }
+        var found = await movingRegion(on: displayID, in: screen)
+        if found == nil { found = await regionAfterInput(on: displayID, in: screen) }
+        guard let video = found else { return Log.write("video full screen: no playing video found") }
         Log.write("video full screen: video at \(video) on \(screen)")
         if fillsScreen(video, screen) { return Log.write("video full screen: already full screen") }
 
-        guard !Task.isCancelled, isFrontmost(pid) else { return Log.write("video full screen: skipped, another app is in front") }
+        guard await bringForward(pid) else { return Log.write("video full screen: skipped, the app didn't come forward") }
         doubleClick(at: CGPoint(x: video.midX, y: video.midY))
-        guard let after = await regionAfterInput(on: displayID, in: screen) else { return }
-        if fillsScreen(after, screen) { return Log.write("video full screen: restored with double-click") }
+        if await filled(on: displayID, in: screen) { return Log.write("video full screen: restored with double-click") }
 
-        guard !Task.isCancelled, isFrontmost(pid) else { return Log.write("video full screen: skipped F, another app is in front") }
+        guard await bringForward(pid) else { return Log.write("video full screen: skipped F, the app didn't come forward") }
         pressF()
-        let done = await regionAfterInput(on: displayID, in: screen).map { fillsScreen($0, screen) } ?? false
+        let done = await filled(on: displayID, in: screen)
         Log.write("video full screen: \(done ? "restored with F" : "page didn't respond")")
+    }
+
+    private static func bringForward(_ pid: pid_t) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        if isFrontmost(pid) { return true }
+        NSRunningApplication(processIdentifier: pid)?.activate()
+        for _ in 0..<10 where !isFrontmost(pid) { try? await Task.sleep(for: .milliseconds(100)) }
+        return isFrontmost(pid)
+    }
+
+    // Some players animate into full screen, so a second look avoids pressing F, which would toggle it back out.
+    private static func filled(on displayID: CGDirectDisplayID, in screen: CGRect) async -> Bool {
+        for _ in 0..<2 {
+            if let region = await regionAfterInput(on: displayID, in: screen), fillsScreen(region, screen) { return true }
+        }
+        return false
     }
 
     private static func isFrontmost(_ pid: pid_t) -> Bool {

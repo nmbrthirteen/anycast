@@ -129,11 +129,27 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     func start(_ target: MirrorTarget, settings: MirrorSettings) async throws {
         let generation = nextStart()
-        let filter = try await Self.filter(for: target)
         switch target.kind {
-        case .window(let id): try await start(filter: filter, settings: settings, crop: target.crop, target: (id, nil), generation: generation)
-        case .display(let id): try await start(filter: filter, settings: settings, crop: target.crop, target: (nil, id), generation: generation)
+        case .window(let id):
+            let (filter, region) = try await Self.windowOnDisplay(id, crop: target.crop)
+            try await start(filter: filter, settings: settings, crop: region, target: (id, nil), generation: generation)
+        case .display(let id):
+            try await start(filter: Self.filter(for: target), settings: settings, crop: target.crop, target: (nil, id), generation: generation)
         }
+    }
+
+    // A window-only filter misses most updates from video drawn on its own layer (Chrome full screen sends a few frames a
+    // second), so the window is captured through its display, with only that window included and the picture cropped to it.
+    private static func windowOnDisplay(_ id: CGWindowID, crop: CGRect?) async throws -> (SCContentFilter, CGRect) {
+        let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+        guard let window = content.windows.first(where: { $0.windowID == id }) else { throw Tools.Failure(message: "That window is gone") }
+        let center = CGPoint(x: window.frame.midX, y: window.frame.midY)
+        guard let display = content.displays.first(where: { $0.frame.contains(center) }) ?? content.displays.first else {
+            throw Tools.Failure(message: "Screen not found")
+        }
+        let frame = window.frame.offsetBy(dx: -display.frame.minX, dy: -display.frame.minY)
+        let region = crop.map { $0.offsetBy(dx: frame.minX, dy: frame.minY).intersection(frame) } ?? frame
+        return (SCContentFilter(display: display, including: [window]), region)
     }
 
     func start(filter: SCContentFilter, settings: MirrorSettings) async throws {

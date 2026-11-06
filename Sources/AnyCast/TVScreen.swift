@@ -10,6 +10,8 @@ final class TVScreen {
     // A fixed identity keeps macOS from piling up a new color profile and arrangement for every session.
     func turnOn() async throws -> CGDirectDisplayID {
         if let id = displayID { return id }
+        homeFrames = Self.visibleWindows()
+        turnedOnAt = Date()
         let display = try AnyCastVirtualDisplay(name: "AnyCast TV", width: 1920, height: 1080, refreshRate: 60, productID: 0x7A01)
         self.display = display
         for attempt in 0..<120 where !Self.isOnline(display.displayID) {
@@ -26,6 +28,14 @@ final class TVScreen {
         Log.write("tv screen on as display \(display.displayID)")
         Self.unmirror(display.displayID)
         keepExtended()
+        // A new screen first appears in a default spot and macOS then moves it, so windows sent too early miss it.
+        var placed = CGDisplayBounds(display.displayID)
+        for _ in 0..<10 {
+            try? await Task.sleep(for: .milliseconds(200))
+            let now = CGDisplayBounds(display.displayID)
+            if now == placed { break }
+            placed = now
+        }
         return display.displayID
     }
 
@@ -50,6 +60,32 @@ final class TVScreen {
         CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
         CGCompleteDisplayConfiguration(config, .forSession)
         Log.write("tv screen was mirrored, switched back to extended")
+    }
+
+    // Adding a screen, and macOS briefly mirroring it, can shuffle other windows onto it. Where every window was just before
+    // the TV screen came on is kept for a short while, so windows that land on it by accident can be put back.
+    private var homeFrames: [CGWindowID: (pid: pid_t, frame: CGRect)] = [:]
+    private var turnedOnAt = Date.distantPast
+
+    func strayWindows() -> [(pid: pid_t, frame: CGRect, home: CGRect)] {
+        guard let bounds, Date().timeIntervalSince(turnedOnAt) < 20 else { return [] }
+        let tv = { (frame: CGRect) in bounds.contains(CGPoint(x: frame.midX, y: frame.midY)) }
+        return Self.visibleWindows().compactMap { id, now in
+            guard tv(now.frame), let home = homeFrames[id], !tv(home.frame) else { return nil }
+            return (now.pid, now.frame, home.frame)
+        }
+    }
+
+    private static func visibleWindows() -> [CGWindowID: (pid: pid_t, frame: CGRect)] {
+        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var windows: [CGWindowID: (pid: pid_t, frame: CGRect)] = [:]
+        for info in list where (info[kCGWindowLayer as String] as? Int) == 0 {
+            guard let id = info[kCGWindowNumber as String] as? CGWindowID, let pid = info[kCGWindowOwnerPID as String] as? pid_t,
+                  let frame = (info[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }),
+                  frame.height > 50 else { continue }
+            windows[id] = (pid, frame)
+        }
+        return windows
     }
 
     func turnOff() {
@@ -175,6 +211,23 @@ enum WindowMover {
         let moved = await move(sent.element, of: sent.pid, to: bounds)
         Log.write("moved pid \(sent.pid) back onto the tv screen: \(moved)")
         return moved
+    }
+
+    static func sendHome(_ strays: [(pid: pid_t, frame: CGRect, home: CGRect)], except sent: SentWindow?) {
+        for stray in strays where stray.pid != sent?.pid {
+            let windows = AX.children(AXUIElementCreateApplication(stray.pid), kAXWindowsAttribute)
+            guard let window = windows.first(where: { window in
+                guard let point = AX.point(window), let size = AX.size(window) else { return false }
+                return abs(point.x - stray.frame.minX) < 3 && abs(point.y - stray.frame.minY) < 3 && abs(size.width - stray.frame.width) < 3
+            }), !isFullScreen(window) else { continue }
+            var origin = stray.home.origin
+            var size = stray.home.size
+            if let position = AXValueCreate(.cgPoint, &origin), let dimensions = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, position)
+                AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, dimensions)
+            }
+            Log.write("put pid \(stray.pid)'s window back where it was, off the tv screen")
+        }
     }
 
     static func isFullScreen(_ window: AXUIElement) -> Bool { AX.bool(window, "AXFullScreen") }
