@@ -73,6 +73,7 @@ final class TVScreen {
 struct SentWindow {
     let pid: pid_t
     let element: AXUIElement
+    let fullScreen: Bool
 }
 
 enum WindowMover {
@@ -155,12 +156,37 @@ enum WindowMover {
         AX.point(window).map { bounds.insetBy(dx: -8, dy: -8).contains($0) } ?? false
     }
 
-    // Moves the sent window back if it left the TV screen (the lid closed and macOS rearranged things).
-    // A window still on the TV is left alone so the user's focus on the laptop isn't taken.
-    static func restore(_ sent: SentWindow, on bounds: CGRect) async {
-        guard AX.point(sent.element) != nil, !isInside(sent.element, bounds) else { return }
+    // Closing the lid makes macOS recreate the TV screen: the video's full screen desktop is lost and the laptop's
+    // windows land on top. A window still showing full size on the TV is left alone so focus on the laptop isn't taken.
+    // Returns true when the window had to be moved, which also ends a web page's own full screen.
+    static func restore(_ sent: SentWindow, on bounds: CGRect) async -> Bool {
+        guard AX.point(sent.element) != nil else { return false }
+        let inPlace = isInside(sent.element, bounds) && isFullScreen(sent.element) == sent.fullScreen
+        if inPlace && frontmostOwner(on: bounds) == sent.pid { return false }
+        if inPlace {
+            NSRunningApplication(processIdentifier: sent.pid)?.activate()
+            AXUIElementPerformAction(sent.element, kAXRaiseAction as CFString)
+            try? await Task.sleep(for: .seconds(1))
+            if frontmostOwner(on: bounds) == sent.pid {
+                Log.write("raised pid \(sent.pid) on the tv screen")
+                return false
+            }
+        }
         let moved = await move(sent.element, of: sent.pid, to: bounds)
         Log.write("moved pid \(sent.pid) back onto the tv screen: \(moved)")
+        return moved
+    }
+
+    static func isFullScreen(_ window: AXUIElement) -> Bool { AX.bool(window, "AXFullScreen") }
+
+    private static func frontmostOwner(on bounds: CGRect) -> pid_t? {
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        return windows.first { info in
+            guard (info[kCGWindowLayer as String] as? Int) == 0,
+                  let frame = (info[kCGWindowBounds as String] as? NSDictionary).flatMap({ CGRect(dictionaryRepresentation: $0) }) else { return false }
+            return frame.contains(center)
+        }?[kCGWindowOwnerPID as String] as? pid_t
     }
 
     private static func frontWindow(of app: AXUIElement) -> AXUIElement? {

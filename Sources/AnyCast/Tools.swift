@@ -20,7 +20,8 @@ enum Tools {
         var errorDescription: String? { message }
     }
 
-    static func run(_ path: String?, _ arguments: [String]) async throws -> Data {
+    // Cancelling the calling task or hitting the timeout ends the process, so a hung yt-dlp or browser can't block casting.
+    static func run(_ path: String?, _ arguments: [String], timeout: Double = 120) async throws -> Data {
         guard let path else { throw Failure(message: "AnyCast is still downloading its video tools. Try again in a minute.") }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
@@ -30,28 +31,57 @@ enum Tools {
         process.standardOutput = out
         process.standardError = err
         try process.run()
-        return try await withCheckedThrowingContinuation { continuation in
-            Thread.detachNewThread {
-                // Both pipes drain at once so a full stderr buffer can't stall the process while stdout is read.
-                let errors = OSAllocatedUnfairLock(initialState: Data())
-                let errorReader = DispatchGroup()
-                DispatchQueue.global().async(group: errorReader) {
-                    let data = err.fileHandleForReading.readDataToEndOfFile()
-                    errors.withLock { $0 = data }
-                }
-                let output = out.fileHandleForReading.readDataToEndOfFile()
-                errorReader.wait()
-                process.waitUntilExit()
-                if process.terminationStatus == 0 {
-                    continuation.resume(returning: output)
-                } else {
-                    let message = String(decoding: errors.withLock { $0 }, as: UTF8.self)
-                    let lastLine = message.split(separator: "\n").last.map(String.init) ?? "exit \(process.terminationStatus)"
-                    continuation.resume(throwing: Failure(message: lastLine))
+        let timedOut = Flag()
+        let timer = DispatchWorkItem {
+            timedOut.set()
+            end(process)
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: timer)
+        defer { timer.cancel() }
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                Thread.detachNewThread {
+                    // Both pipes drain at once so a full stderr buffer can't stall the process while stdout is read.
+                    let errors = OSAllocatedUnfairLock(initialState: Data())
+                    let errorReader = DispatchGroup()
+                    DispatchQueue.global().async(group: errorReader) {
+                        let data = err.fileHandleForReading.readDataToEndOfFile()
+                        errors.withLock { $0 = data }
+                    }
+                    let output = out.fileHandleForReading.readDataToEndOfFile()
+                    errorReader.wait()
+                    process.waitUntilExit()
+                    if process.terminationStatus == 0 && process.terminationReason == .exit {
+                        continuation.resume(returning: output)
+                    } else if timedOut.isSet {
+                        continuation.resume(throwing: Failure(message: "\(URL(fileURLWithPath: path).lastPathComponent) took too long and was stopped"))
+                    } else {
+                        let message = String(decoding: errors.withLock { $0 }, as: UTF8.self)
+                        let lastLine = message.split(separator: "\n").last.map(String.init) ?? "exit \(process.terminationStatus)"
+                        continuation.resume(throwing: Failure(message: lastLine))
+                    }
                 }
             }
+        } onCancel: {
+            end(process)
         }
     }
+
+    static func end(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        let pid = process.processIdentifier
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+            if process.isRunning { kill(pid, SIGKILL) }
+        }
+    }
+}
+
+final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func set() { lock.withLock { value = true } }
 }
 
 final class FFmpegProducer: StreamProducer {
@@ -80,12 +110,7 @@ final class FFmpegProducer: StreamProducer {
     }
 
     func stop() {
-        guard let process, process.isRunning else { return }
-        process.terminate()
-        let pid = process.processIdentifier
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
-            if process.isRunning { kill(pid, SIGKILL) }
-        }
+        if let process { Tools.end(process) }
     }
 }
 

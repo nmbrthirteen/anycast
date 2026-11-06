@@ -100,7 +100,7 @@ struct DLNAClient {
         _ = try? await call(Self.transport, "Stop")
         do {
             try await setURIWhenAllowed(item, mime: item.mime)
-        } catch is UPnPError where item.mime == "video/mpeg" {
+        } catch let error as UPnPError where item.mime == "video/mpeg" && error.code != 606 {
             try await setURIWhenAllowed(item, mime: "video/mp2t")
         }
         var lastError: Error?
@@ -174,7 +174,7 @@ struct DLNAClient {
         <s:Body><u:\(action) xmlns:u="\(service)">\(args)</u:\(action)></s:Body></s:Envelope>
         """
         // Status reads should fail fast when the TV is off; SetAVTransportURI can take long while the TV probes the stream.
-        var request = URLRequest(url: endpoint, timeoutInterval: action.hasPrefix("Get") ? 5 : 30)
+        var request = URLRequest(url: endpoint, timeoutInterval: action == "SetAVTransportURI" ? 30 : action.hasPrefix("Get") ? 5 : 10)
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(service)#\(action)\"", forHTTPHeaderField: "SOAPACTION")

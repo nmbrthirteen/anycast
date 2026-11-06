@@ -30,6 +30,7 @@ private struct GeneralSettings: View {
     @AppStorage(Pref.showMenuBar) private var showMenuBar = true
     @AppStorage(Pref.pauseBrowser) private var pauseBrowser = true
     @AppStorage(Pref.resumePosition) private var resumePosition = true
+    @AppStorage(Pref.sendMode) private var sendMode = SendMode.keepOnMac
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var loginError: String?
 
@@ -49,6 +50,19 @@ private struct GeneralSettings: View {
                 if let loginError { Text(loginError).font(.caption).foregroundStyle(.red) }
                 Toggle("Show in menu bar", isOn: $showMenuBar)
                 Button("Show welcome guide") { UserDefaults.standard.set(false, forKey: Pref.onboarded) }
+            }
+            Section {
+                Picker("Send to TV", selection: $sendMode) {
+                    Text("Keep the video on this Mac").tag(SendMode.keepOnMac)
+                    Text("Move it to the TV screen").tag(SendMode.moveToTVScreen)
+                }
+            } header: {
+                Text("Playing videos")
+            } footer: {
+                Text(sendMode == .keepOnMac
+                     ? "The TV mirrors the video's window, so you watch and control it here. Other windows can cover it, but keep it on the desktop you're using. With the lid closed, it moves to the TV screen and comes back when you open the lid."
+                     : "The video moves to a second screen that only the TV shows, and keeps playing on any desktop. Control it with the mouse past the right edge of your display.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section {
                 Toggle("Pause the video in the browser when casting", isOn: $pauseBrowser)

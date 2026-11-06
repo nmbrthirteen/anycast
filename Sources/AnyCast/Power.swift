@@ -6,6 +6,8 @@ final class Power {
     private static let rulePath = "/etc/sudoers.d/anycast-pmset"
     private var assertions: [IOPMAssertionID] = []
     private var sleepDisabled = false
+    // allowSleep can run while keepAwake is still waiting on pmset or the password prompt.
+    private var wantsAwake = false
 
     init() {
         if UserDefaults.standard.bool(forKey: Pref.sleepDisabledByAnyCast) { Task { await Self.pmset(disable: false) } }
@@ -13,6 +15,7 @@ final class Power {
 
     // System sleep prevention only holds on AC power, so idle sleep is blocked too for casting on battery.
     func keepAwake(lidClosed: Bool) async throws {
+        wantsAwake = true
         if assertions.isEmpty {
             for type in [kIOPMAssertionTypePreventSystemSleep, kIOPMAssertionTypePreventUserIdleSystemSleep] {
                 var id: IOPMAssertionID = 0
@@ -23,10 +26,16 @@ final class Power {
         }
         guard lidClosed, !sleepDisabled else { return }
         if await !Self.pmset(disable: true) {
+            guard wantsAwake else { return }
             try await Self.installRule()
+            guard wantsAwake else { return }
             guard await Self.pmset(disable: true) else {
                 throw Tools.Failure(message: "AnyCast couldn't keep your Mac awake with the lid closed. Keep the lid open while casting.")
             }
+        }
+        guard wantsAwake, !sleepDisabled else {
+            if !wantsAwake { await Self.pmset(disable: false) }
+            return
         }
         sleepDisabled = true
         UserDefaults.standard.set(true, forKey: Pref.sleepDisabledByAnyCast)
@@ -34,6 +43,7 @@ final class Power {
     }
 
     func allowSleep() {
+        wantsAwake = false
         assertions.forEach { IOPMAssertionRelease($0) }
         assertions.removeAll()
         guard sleepDisabled else { return }
@@ -71,7 +81,7 @@ final class Power {
     private static func runAsAdmin(_ shell: String) async throws {
         let quoted = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
         do {
-            _ = try await Tools.run("/usr/bin/osascript", ["-e", "do shell script \"\(quoted)\" with administrator privileges"])
+            _ = try await Tools.run("/usr/bin/osascript", ["-e", "do shell script \"\(quoted)\" with administrator privileges"], timeout: 300)
         } catch let error as Tools.Failure where error.message.contains("-128") {
             throw Tools.Failure(message: "AnyCast needs your password to keep your Mac awake with the lid closed. Keep the lid open, or try again.")
         } catch {

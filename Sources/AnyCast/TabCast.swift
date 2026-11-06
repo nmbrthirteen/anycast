@@ -22,9 +22,17 @@ final class TabCastServer: @unchecked Sendable {
         }
         parameters.defaultProtocolStack.applicationProtocols.insert(websocket, at: 0)
         guard let listener = try? NWListener(using: parameters, on: NWEndpoint.Port(rawValue: Self.port)!) else {
-            return Log.write("tab cast server could not start on port \(Self.port)")
+            Log.write("tab cast server could not start on port \(Self.port), retrying")
+            return queue.asyncAfter(deadline: .now() + 3) { self.start() }
         }
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
+        // The port can still be held right after a relaunch, so keep trying instead of leaving the extension without a server.
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard case .failed(let error) = state, let self else { return }
+            Log.write("tab cast server failed: \(error), retrying")
+            listener?.cancel()
+            self.queue.asyncAfter(deadline: .now() + 3) { self.start() }
+        }
         listener.start(queue: queue)
         self.listener = listener
     }
@@ -101,11 +109,13 @@ final class TabSession: @unchecked Sendable {
 
         Thread.detachNewThread { [self] in
             let reader = output.fileHandleForReading
+            // Writes hold the lock so a handle is never closed, and its descriptor reused, mid-write.
             while let chunk = try? reader.read(upToCount: 64 * 1024), !chunk.isEmpty {
-                lock.lock()
-                let target = consumer
-                lock.unlock()
-                if let target, (try? target.write(contentsOf: chunk)) == nil { setConsumer(nil) }
+                lock.withLock {
+                    guard let target = consumer, (try? target.write(contentsOf: chunk)) == nil else { return }
+                    try? target.close()
+                    consumer = nil
+                }
             }
             close()
         }
@@ -116,11 +126,17 @@ final class TabSession: @unchecked Sendable {
     }
 
     fileprivate func setConsumer(_ handle: FileHandle?) {
-        lock.lock()
-        let previous = consumer
-        consumer = handle
-        lock.unlock()
-        if previous !== handle { try? previous?.close() }
+        lock.withLock {
+            if consumer !== handle { try? consumer?.close() }
+            consumer = handle
+        }
+    }
+
+    fileprivate func release(_ handle: FileHandle) {
+        lock.withLock {
+            if consumer === handle { consumer = nil }
+            try? handle.close()
+        }
     }
 
     func makeProducer() -> StreamProducer { TabProducer(session: self) }
@@ -154,6 +170,9 @@ private final class TabProducer: StreamProducer {
     }
 
     func stop() {
-        if let pipe { try? pipe.fileHandleForWriting.close() }
+        guard let pipe else { return }
+        // Closing the read end first fails a write blocked on a full pipe, which would otherwise hold the session lock.
+        try? pipe.fileHandleForReading.close()
+        session.release(pipe.fileHandleForWriting)
     }
 }

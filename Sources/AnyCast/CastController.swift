@@ -34,6 +34,7 @@ final class CastController: ObservableObject {
     @AppStorage(Pref.resumePosition) var resumePosition = true
     @AppStorage(Pref.lowLatency) var lowLatency = true
     @AppStorage(Pref.muteMac) var muteMac = true
+    @AppStorage(Pref.sendMode) var sendMode = SendMode.keepOnMac
 
     let mirror = ScreenMirror()
     let browser = BrowserWatcher()
@@ -41,9 +42,14 @@ final class CastController: ObservableObject {
     let recentApps = RecentApps()
     let media = MediaDetector()
     var sentWindow: SentWindow?
+    var mirroredApp: PlayingApp?
+    var followedLidClosed = false
+    var lidIsClosed = Lid.isClosed
+    var lastDisplayChange: Date?
+    var captureRestarts: [Date] = []
+    var isHandingOff = false
     var restoreTask: Task<Void, Never>?
     var restartTask: Task<Void, Never>?
-    var captureRestarts = 0
     var handledLaunchArguments = false
     private let server = MediaServer()
     private let power = Power()
@@ -71,6 +77,7 @@ final class CastController: ObservableObject {
         Task {
             do { try await startServer() } catch { message = error.localizedDescription }
         }
+        MacAudio.restoreAfterCrash()
         mirror.onStopped = { [weak self] error in Task { @MainActor in self?.mirrorStopped(error) } }
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
@@ -88,6 +95,7 @@ final class CastController: ObservableObject {
         media.onChange = { [weak self] in self?.refreshPlaying() }
         media.start()
         refreshPlaying()
+        watchLid()
     }
 
     private func startServer() async throws {
@@ -96,6 +104,16 @@ final class CastController: ObservableObject {
         do { try await start.value } catch {
             serverStart = nil
             throw error
+        }
+    }
+
+    // Lid changes don't always reach the app as a screen change, so the lid is checked while casting.
+    private func watchLid() {
+        Task { [weak self] in
+            while let self {
+                if plan != nil { lidMayHaveChanged() }
+                try? await Task.sleep(for: .seconds(2))
+            }
         }
     }
 
@@ -226,7 +244,11 @@ final class CastController: ObservableObject {
             return
         }
         plan.startAt = currentTime
-        run("Reconnecting to the TV") { [self] in try await cast(plan) }
+        reconnect(plan)
+    }
+
+    func reconnect(_ plan: CastPlan) {
+        run("Reconnecting to the TV", continuing: true) { [self] in try await cast(plan) }
     }
 
     func setVolume(_ value: Double) {
@@ -262,11 +284,11 @@ final class CastController: ObservableObject {
     private func endSession() {
         pollTask?.cancel()
         seekTask?.cancel()
-        tvScreen.turnOff()
-        tvScreenOn = false
-        sentWindow = nil
+        leaveTVScreen()
+        mirroredApp = nil
         restartTask?.cancel()
-        captureRestarts = 0
+        captureRestarts = []
+        lastDisplayChange = nil
         MacAudio.restore()
         mirror.speed = 1
         server.clear()
@@ -277,10 +299,15 @@ final class CastController: ObservableObject {
         position = 0
     }
 
-    func run(_ status: String, _ work: @escaping () async throws -> Void) {
+    // `continuing` keeps the current session's state, for steps like reconnecting or following the lid.
+    func run(_ status: String, continuing: Bool = false, _ work: @escaping () async throws -> Void) {
         guard renderer != nil else {
             message = "No TV selected. Scan for your TV first."
             return
+        }
+        if !continuing {
+            mirroredApp = nil
+            restartTask?.cancel()
         }
         working = status
         message = nil
@@ -298,6 +325,7 @@ final class CastController: ObservableObject {
                 try await work()
             } catch {
                 guard !Task.isCancelled else { return }
+                if error is CancellationError { return working = nil }
                 Log.write("error: \(error.localizedDescription)")
                 message = error.localizedDescription
                 if plan == nil { endSession() }
@@ -316,7 +344,10 @@ final class CastController: ObservableObject {
         seekTask?.cancel()
         restartTask?.cancel()
         server.clear()
-        if case .mirror = plan.source {} else { mirror.stop() }
+        if case .mirror = plan.source {} else {
+            mirror.stop()
+            leaveTVScreen()
+        }
         if case .remote = plan.source {} else { try await startServer() }
 
         offset = plan.seeksByRestart ? plan.startAt : 0
@@ -352,7 +383,6 @@ final class CastController: ObservableObject {
             throw error
         }
         self.plan = plan
-        captureRestarts = 0
         duration = plan.duration
         position = 0
         hasPlayed = false
@@ -406,6 +436,13 @@ final class CastController: ObservableObject {
                     if state == "PLAYING" && info.position > 0 { hasPlayed = true }
                 }
                 guard state == "STOPPED" || state == "NO_MEDIA_PRESENT" else { continue }
+                // Screen changes can stall the stream long enough for the TV to give up, so reconnect once instead of ending.
+                if hasPlayed, let plan, plan.mode == .mirror, !isHandingOff, working == nil, let changed = lastDisplayChange, Date().timeIntervalSince(changed) < 30 {
+                    Log.write("tv stopped after a screen change, reconnecting")
+                    lastDisplayChange = nil
+                    reconnect(plan)
+                    return
+                }
                 if hasPlayed {
                     endSession()
                     return

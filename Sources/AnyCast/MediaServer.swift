@@ -17,11 +17,12 @@ final class MediaServer: @unchecked Sendable {
     private let lock = NSLock()
     private var listener: NWListener?
     private var routes: [String: Content] = [:]
-    private var activeProducer: StreamProducer?
+    private var active: (producer: StreamProducer, connection: NWConnection)?
     private(set) var port: UInt16 = 0
 
     func start() async throws {
-        let listener = try NWListener(using: .tcp, on: .any)
+        // Restarts keep the same port so URLs already handed to the TV stay valid.
+        let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: lock.withLock { port }) ?? .any)
         listener.newConnectionHandler = { [weak self] connection in self?.accept(connection) }
         do {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -51,6 +52,15 @@ final class MediaServer: @unchecked Sendable {
             port = listener.port?.rawValue ?? 0
             self.listener = listener
         }
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
+            guard case .failed(let error) = state else { return }
+            Log.write("media server failed: \(error), restarting")
+            listener?.cancel()
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                try? await self?.start()
+            }
+        }
     }
 
     func publish(_ content: Content, ext: String, for host: String) throws -> URL {
@@ -68,10 +78,10 @@ final class MediaServer: @unchecked Sendable {
     func clear() {
         lock.lock()
         routes.removeAll()
-        let producer = activeProducer
-        activeProducer = nil
+        let previous = active
+        active = nil
         lock.unlock()
-        producer?.stop()
+        end(previous)
     }
 
     private func accept(_ connection: NWConnection) {
@@ -177,10 +187,10 @@ final class MediaServer: @unchecked Sendable {
         // MStar renderers stall after a bodiless HEAD on a live stream, so HEAD gets the stream too.
         let producer = make()
         lock.lock()
-        let previous = activeProducer
-        activeProducer = producer
+        let previous = active
+        active = (producer, connection)
         lock.unlock()
-        previous?.stop()
+        end(previous)
 
         let output: FileHandle
         do { output = try producer.start() } catch {
@@ -221,6 +231,12 @@ final class MediaServer: @unchecked Sendable {
             producer.stop()
             connection.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
         }
+    }
+
+    // A TV that stops reading leaves the send thread waiting forever; cancelling the connection releases it.
+    private func end(_ stream: (producer: StreamProducer, connection: NWConnection)?) {
+        stream?.connection.cancel()
+        stream?.producer.stop()
     }
 
     private func dlnaHeaders(mime: String, live: Bool) -> [String: String] {

@@ -61,11 +61,17 @@ final class Updater: ObservableObject {
         }
     }
 
+    private var waitingToInstall = false
+
     func installWhenIdle() {
-        guard staged != nil else { return }
+        guard staged != nil, !waitingToInstall else { return }
         if canInstallNow() { return install() }
+        waitingToInstall = true
         Timer.scheduledTimer(withTimeInterval: 30, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.installWhenIdle() }
+            Task { @MainActor in
+                self?.waitingToInstall = false
+                self?.installWhenIdle()
+            }
         }
     }
 

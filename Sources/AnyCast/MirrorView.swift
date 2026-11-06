@@ -84,6 +84,7 @@ struct TVScreenCard: View {
 
 struct NowPlayingCard: View {
     @EnvironmentObject private var controller: CastController
+    @AppStorage(Pref.sendMode) private var sendMode = SendMode.keepOnMac
 
     var body: some View {
         HStack(spacing: 14) {
@@ -94,7 +95,9 @@ struct NowPlayingCard: View {
                     Text(controller.playingApps.count > 1
                          ? controller.playingApps.map(\.name).joined(separator: " and ") + " are playing"
                          : "\(app.name) is playing").font(.headline)
-                    Text("Moves its window onto the TV screen so it keeps playing on any desktop.")
+                    Text(sendMode == .keepOnMac
+                         ? "Mirrors its window to the TV. You keep watching and controlling it here."
+                         : "Moves its window onto the TV screen so it keeps playing on any desktop.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
             } else {

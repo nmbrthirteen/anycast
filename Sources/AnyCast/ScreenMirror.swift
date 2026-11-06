@@ -121,27 +121,38 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         return title.contains("picture in picture") || title.contains("picture-in-picture")
     }
 
-    private(set) var windowID: CGWindowID?
-    private(set) var displayID: CGDirectDisplayID?
+    private var target: (window: CGWindowID?, display: CGDirectDisplayID?) = (nil, nil)
+    private var starts = 0
+    var windowID: CGWindowID? { lock.withLock { target.window } }
+    var isCapturing: Bool { lock.withLock { stream != nil } }
+    var displayID: CGDirectDisplayID? { lock.withLock { target.display } }
 
     func start(_ target: MirrorTarget, settings: MirrorSettings) async throws {
+        let generation = nextStart()
+        let filter = try await Self.filter(for: target)
         switch target.kind {
-        case .window(let id): (windowID, displayID) = (id, nil)
-        case .display(let id): (windowID, displayID) = (nil, id)
+        case .window(let id): try await start(filter: filter, settings: settings, crop: target.crop, target: (id, nil), generation: generation)
+        case .display(let id): try await start(filter: filter, settings: settings, crop: target.crop, target: (nil, id), generation: generation)
         }
-        try await start(filter: Self.filter(for: target), settings: settings, crop: target.crop)
     }
 
-    func start(filter: SCContentFilter, settings: MirrorSettings, crop: CGRect? = nil) async throws {
-        stop()
-        self.settings = settings
+    func start(filter: SCContentFilter, settings: MirrorSettings) async throws {
+        try await start(filter: filter, settings: settings, crop: nil, target: (nil, nil), generation: nextStart())
+    }
+
+    private func nextStart() -> Int { lock.withLock { starts += 1; return starts } }
+
+    // Starts can overlap (a capture restart racing a lid handoff). Only the newest one keeps its stream.
+    private func start(filter: SCContentFilter, settings: MirrorSettings, crop: CGRect?,
+                       target: (window: CGWindowID?, display: CGDirectDisplayID?), generation: Int) async throws {
+        guard lock.withLock({ starts == generation }) else { throw CancellationError() }
+        tearDown()
         let region = crop.map { $0.intersection(CGRect(origin: .zero, size: filter.contentRect.size)) }.flatMap { $0.width > 100 && $0.height > 60 ? $0 : nil }
         let points = region?.size ?? filter.contentRect.size
         let size = CGSize(width: points.width * CGFloat(filter.pointPixelScale), height: points.height * CGFloat(filter.pointPixelScale))
 
         let fit = min(1, Double(settings.maxHeight) / size.height, Double(settings.maxHeight) * 16 / 9 / size.width)
         let (width, height) = (Int(size.width * fit) & ~1, Int(size.height * fit) & ~1)
-        lock.withLock { (self.width, self.height) = (width, height) }
 
         let config = SCStreamConfiguration()
         config.width = width
@@ -162,31 +173,53 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: DispatchQueue(label: "anycast.video"))
         try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: DispatchQueue(label: "anycast.audio"))
         try await stream.startCapture()
-        self.stream = stream
+        let current = lock.withLock {
+            guard starts == generation else { return false }
+            self.stream = stream
+            self.settings = settings
+            self.target = target
+            (self.width, self.height) = (width, height)
+            return true
+        }
+        guard current else {
+            try? await stream.stopCapture()
+            throw CancellationError()
+        }
     }
 
+    // Also cancels a start that is still in progress.
     func stop() {
-        stream?.stopCapture { _ in }
-        stream = nil
-        lock.lock()
-        latestFrame = nil
-        audio.removeAll()
-        lock.unlock()
+        lock.withLock { starts += 1 }
+        tearDown()
+    }
+
+    private func tearDown() {
+        let old = lock.withLock {
+            let old = stream
+            stream = nil
+            target = (nil, nil)
+            latestFrame = nil
+            audio.removeAll()
+            return old
+        }
+        old?.stopCapture { _ in }
     }
 
     func makeProducer() -> StreamProducer { MirrorEncoder(mirror: self) }
 
     // Runs on a capture queue. Errors from a stream that was already replaced are ignored.
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.stream === stream else { return }
+        let current = lock.withLock {
+            guard self.stream === stream else { return false }
             self.stream = nil
-            self.onStopped?(error)
+            return true
         }
+        guard current else { return }
+        DispatchQueue.main.async { [weak self] in self?.onStopped?(error) }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer buffer: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard buffer.isValid else { return }
+        guard buffer.isValid, lock.withLock({ self.stream === stream }) else { return }
         switch type {
         case .screen: storeFrame(buffer)
         case .audio: storeAudio(buffer)
@@ -249,10 +282,10 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private var frameIsNew = false
 
-    fileprivate func currentFrame(count: Int) -> Data? {
+    fileprivate func currentFrame(count: Int, width: Int, height: Int) -> Data? {
         lock.lock()
         defer { lock.unlock() }
-        guard let latestFrame else { return nil }
+        guard let latestFrame, width == self.width, height == self.height else { return nil }
         stats.frames += count
         if frameIsNew { stats.newFrames += 1 }
         frameIsNew = false
@@ -338,14 +371,17 @@ private final class MirrorEncoder: StreamProducer {
     private let fifo = FileManager.default.temporaryDirectory.appendingPathComponent("anycast-audio-\(UUID().uuidString)").path
     private let ffmpeg: FFmpegProducer
     private let running = Atomic(false)
+    // ffmpeg reads raw frames of this exact size, so frames from a capture restarted at another size are never written.
+    private let width: Int, height: Int
 
     init(mirror: ScreenMirror) {
         self.mirror = mirror
+        (width, height) = (mirror.width, mirror.height)
         let s = mirror.settings
         let bitrate = s.bitrateMbps * 1_000_000
         ffmpeg = FFmpegProducer(arguments: [
             // Color tags go on the input; on the output they force a software color conversion of every frame.
-            "-f", "rawvideo", "-pix_fmt", "nv12", "-s", "\(mirror.width)x\(mirror.height)", "-framerate", String(s.fps),
+            "-f", "rawvideo", "-pix_fmt", "nv12", "-s", "\(width)x\(height)", "-framerate", String(s.fps),
             "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-i", "pipe:0",
             "-f", "f32le", "-ar", String(ScreenMirror.sampleRate), "-ac", "2", "-i", fifo,
             "-c:v", "h264_videotoolbox", "-realtime", "1", "-profile:v", "high", "-bf", "0",
@@ -372,12 +408,12 @@ private final class MirrorEncoder: StreamProducer {
 
         Thread.detachNewThread { [self] in
             // Every due frame is written, black until capture starts, so video time never falls behind the audio.
-            let black = Data(repeating: 16, count: mirror.width * mirror.height) + Data(repeating: 128, count: mirror.width * mirror.height / 2)
+            let black = Data(repeating: 16, count: width * height) + Data(repeating: 128, count: width * height / 2)
             var written = 0
             while running.load(ordering: .relaxed) {
                 let due = Int(clock.now() * Double(fps)) - written
                 if due > 0 {
-                    let frame = mirror.currentFrame(count: due) ?? black
+                    let frame = mirror.currentFrame(count: due, width: width, height: height) ?? black
                     for _ in 0..<due where running.load(ordering: .relaxed) {
                         guard (try? videoInput.write(contentsOf: frame)) != nil else { running.store(false, ordering: .relaxed); break }
                         written += 1

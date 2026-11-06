@@ -137,7 +137,7 @@ final class BrowserWatcher {
 
     private static func run(_ source: String) async throws -> String {
         do {
-            let data = try await Tools.run("/usr/bin/osascript", ["-e", source])
+            let data = try await Tools.run("/usr/bin/osascript", ["-e", source], timeout: 60)
             return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .newlines)
         } catch let failure as Tools.Failure where failure.message.contains("-1743") {
             throw Tools.Failure(message: "AnyCast isn't allowed to read your browser tabs. Turn it on in System Settings, Privacy & Security, Automation.")

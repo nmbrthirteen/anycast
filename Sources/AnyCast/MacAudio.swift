@@ -4,7 +4,20 @@ import Foundation
 @MainActor
 enum MacAudio {
     private enum Muted { case device(AudioObjectID), script(Task<Bool, Never>) }
-    private static var muted: Muted?
+    private static var muted: Muted? {
+        didSet { UserDefaults.standard.set(muted != nil, forKey: Pref.mutedByAnyCast) }
+    }
+
+    // A crash or force quit skips restore(), so the next launch unmutes what AnyCast muted.
+    static func restoreAfterCrash() {
+        guard muted == nil, UserDefaults.standard.bool(forKey: Pref.mutedByAnyCast) else { return }
+        UserDefaults.standard.set(false, forKey: Pref.mutedByAnyCast)
+        if let device = defaultOutput(), canMute(device) {
+            _ = setMute(device, false)
+        } else {
+            Task.detached { _ = osascript("set volume output muted false") }
+        }
+    }
 
     static func mute() {
         guard muted == nil else { return }

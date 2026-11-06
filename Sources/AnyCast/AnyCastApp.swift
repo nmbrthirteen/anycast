@@ -13,7 +13,7 @@ struct AnyCastApp: App {
                 .environmentObject(controller)
                 .environmentObject(updater)
                 .task {
-                    updater.canInstallNow = { [weak controller] in controller?.plan == nil }
+                    updater.canInstallNow = { [controller] in controller.plan == nil && controller.working == nil }
                     updater.start()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in controller.shutdown() }
